@@ -3,10 +3,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List
 from scipy import stats
 import xgboost as xgb
 import logging
+from datetime import datetime, timedelta
+from .reinforcement.rl_models import RLTrader, TradingEnvironment
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +227,8 @@ class Backtester:
         axes[0, 0].set_ylabel("Portfolio Value")
 
         # Plot 2: Returns Distribution
-        sns.histplot(self.portfolio_returns, kde=True, ax=axes[0, 1])
+        portfolio_returns = self.portfolio_value.pct_change()
+        sns.histplot(portfolio_returns, kde=True, ax=axes[0, 1])
         axes[0, 1].set_title("Returns Distribution")
         axes[0, 1].set_xlabel("Return")
         axes[0, 1].set_ylabel("Frequency")
@@ -238,7 +241,7 @@ class Backtester:
         axes[1, 0].set_ylabel("Drawdown")
 
         # Plot 4: Rolling Sharpe Ratio
-        rolling_returns = self.portfolio_returns.rolling(window=252)
+        rolling_returns = portfolio_returns.rolling(window=252)
         rolling_sharpe = np.sqrt(252) * rolling_returns.mean() / rolling_returns.std()
         rolling_sharpe.plot(ax=axes[1, 1])
         axes[1, 1].set_title("Rolling Sharpe Ratio (1Y)")
@@ -252,14 +255,14 @@ class Backtester:
         axes[2, 0].set_ylabel("Position Size")
 
         # Plot 6: Rolling Volatility
-        rolling_vol = self.portfolio_returns.rolling(window=63).std() * np.sqrt(252)
+        rolling_vol = portfolio_returns.rolling(window=63).std() * np.sqrt(252)
         rolling_vol.plot(ax=axes[2, 1])
         axes[2, 1].set_title("Rolling Volatility (3M)")
         axes[2, 1].set_xlabel("Date")
         axes[2, 1].set_ylabel("Annualized Volatility")
 
         plt.tight_layout()
-        plt.savefig("backtest_results.png")
+        plt.savefig("outputs/plots/backtest_results.png")
         plt.close()
 
     def plot_position_analysis(self) -> None:
@@ -267,20 +270,303 @@ class Backtester:
         if self.positions is None:
             raise ValueError("Must run backtest first!")
 
-        fig, axes = plt.subplots(2, 1, figsize=(12, 10))
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
 
         # Plot 1: Position Changes
         position_changes = self.positions.diff().abs()
-        position_changes.plot(ax=axes[0])
-        axes[0].set_title("Position Changes Over Time")
-        axes[0].set_xlabel("Date")
-        axes[0].set_ylabel("Absolute Position Change")
+        position_changes.plot(ax=axes[0, 0])
+        axes[0, 0].set_title("Position Changes Over Time")
+        axes[0, 0].set_xlabel("Date")
+        axes[0, 0].set_ylabel("Absolute Position Change")
 
         # Plot 2: Position Distribution
-        sns.histplot(self.positions, kde=True, ax=axes[1])
-        axes[1].set_title("Position Distribution")
-        axes[1].set_xlabel("Position Size")
-        axes[1].set_ylabel("Frequency")
+        sns.histplot(self.positions.values.flatten(), kde=True, ax=axes[0, 1])
+        axes[0, 1].set_title("Position Distribution")
+        axes[0, 1].set_xlabel("Position Size")
+        axes[0, 1].set_ylabel("Frequency")
+
+        # Plot 3: Gross Exposure
+        gross_exposure = self.positions.abs().sum(axis=1)
+        gross_exposure.plot(ax=axes[1, 0])
+        axes[1, 0].set_title("Gross Exposure Over Time")
+        axes[1, 0].set_xlabel("Date")
+        axes[1, 0].set_ylabel("Gross Exposure")
+
+        # Plot 4: Net Exposure
+        net_exposure = self.positions.sum(axis=1)
+        net_exposure.plot(ax=axes[1, 1])
+        axes[1, 1].set_title("Net Exposure Over Time")
+        axes[1, 1].set_xlabel("Date")
+        axes[1, 1].set_ylabel("Net Exposure")
 
         plt.tight_layout()
-        plt.show()
+        plt.savefig("outputs/plots/position_analysis.png")
+        plt.close()
+
+    def plot_signal_analysis(self) -> None:
+        """Plot analysis of trading signals and predictions."""
+        if self.predictions is None:
+            raise ValueError("Must have predictions to analyze signals!")
+
+        fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+
+        # Plot 1: Signal Distribution
+        sns.histplot(self.predictions, kde=True, ax=axes[0, 0])
+        axes[0, 0].set_title("Signal Distribution")
+        axes[0, 0].set_xlabel("Signal Value")
+        axes[0, 0].set_ylabel("Frequency")
+
+        # Plot 2: Signal Over Time
+        pd.Series(
+            self.predictions, index=self.returns.index[-len(self.predictions) :]
+        ).plot(ax=axes[0, 1])
+        axes[0, 1].set_title("Signal Evolution Over Time")
+        axes[0, 1].set_xlabel("Date")
+        axes[0, 1].set_ylabel("Signal Value")
+
+        # Plot 3: Signal Autocorrelation
+        pd.plotting.autocorrelation_plot(self.predictions, ax=axes[1, 0])
+        axes[1, 0].set_title("Signal Autocorrelation")
+
+        # Plot 4: Signal vs Returns
+        portfolio_returns = (self.returns * self.positions).sum(axis=1)
+        signal_series = pd.Series(
+            self.predictions, index=self.returns.index[-len(self.predictions) :]
+        )
+        aligned_returns = portfolio_returns[signal_series.index]
+        axes[1, 1].scatter(signal_series, aligned_returns)
+        axes[1, 1].set_title("Signal vs Next-Day Returns")
+        axes[1, 1].set_xlabel("Signal Value")
+        axes[1, 1].set_ylabel("Next-Day Return")
+
+        plt.tight_layout()
+        plt.savefig("outputs/plots/signal_analysis.png")
+        plt.close()
+
+    def save_performance_report(self) -> None:
+        """Save performance metrics and analysis to a JSON file."""
+        if self.portfolio_value is None:
+            raise ValueError("Must run backtest first!")
+
+        portfolio_returns = self.portfolio_value.pct_change()
+
+        report = {
+            "performance_metrics": self.compute_performance_metrics(portfolio_returns),
+            "position_metrics": {
+                "avg_gross_exposure": float(self.positions.abs().sum(axis=1).mean()),
+                "avg_net_exposure": float(self.positions.sum(axis=1).mean()),
+                "max_position_size": float(self.positions.abs().max().max()),
+                "avg_position_count": float((self.positions != 0).sum(axis=1).mean()),
+            },
+            "signal_metrics": {
+                "signal_mean": float(np.mean(self.predictions)),
+                "signal_std": float(np.std(self.predictions)),
+                "signal_skew": float(stats.skew(self.predictions)),
+                "signal_kurtosis": float(stats.kurtosis(self.predictions)),
+            },
+        }
+
+        import json
+
+        with open("outputs/reports/backtest_report.json", "w") as f:
+            json.dump(report, f, indent=4)
+
+
+class StrategyBacktester:
+    """Backtester for RL trading strategy across multiple periods."""
+
+    def __init__(
+        self,
+        returns: pd.DataFrame,
+        predictions: np.ndarray,
+        rl_agent: RLTrader,
+        initial_balance: float = 1e6,
+        window_size: int = 50,
+    ):
+        self.returns = returns
+        self.predictions = predictions
+        self.rl_agent = rl_agent
+        self.initial_balance = initial_balance
+        self.window_size = window_size
+
+    def run_backtest(
+        self, start_date: datetime, end_date: datetime, epsilon: float = 0.0
+    ) -> Tuple[pd.DataFrame, Dict]:
+        """Run backtest for a specific period."""
+
+        # Filter data for the period
+        mask = (self.returns.index >= start_date) & (self.returns.index <= end_date)
+        period_returns = self.returns[mask]
+        period_predictions = self.predictions[mask.values]
+
+        if len(period_returns) < self.window_size:
+            raise ValueError("Period too short for the given window size")
+
+        # Create environment for the period
+        env = TradingEnvironment(
+            returns=period_returns,
+            predictions=period_predictions,
+            initial_balance=self.initial_balance,
+            window_size=self.window_size,
+        )
+
+        # Run simulation
+        state = env.reset()
+        done = False
+
+        while not done:
+            action = self.rl_agent.select_action(state, epsilon)
+            state, reward, done, info = env.step(action)
+
+        # Get trading signals and metrics
+        results_df = env.get_trading_signals()
+
+        # Calculate performance metrics
+        metrics = self._calculate_metrics(results_df)
+
+        return results_df, metrics
+
+    def run_rolling_backtests(
+        self,
+        period_length: int = 252,  # Default 1 year
+        stride: int = 126,  # Default 6 months
+        epsilon: float = 0.0,
+    ) -> List[Tuple[pd.DataFrame, Dict]]:
+        """Run multiple backtests using rolling windows."""
+
+        all_results = []
+        start_idx = 0
+
+        while start_idx + period_length <= len(self.returns):
+            start_date = self.returns.index[start_idx]
+            end_date = self.returns.index[start_idx + period_length - 1]
+
+            logger.info(f"Running backtest for period {start_date} to {end_date}")
+
+            try:
+                results = self.run_backtest(start_date, end_date, epsilon)
+                all_results.append((start_date, end_date, results))
+            except Exception as e:
+                logger.error(
+                    f"Error in backtest for period {start_date} to {end_date}: {str(e)}"
+                )
+
+            start_idx += stride
+
+        return all_results
+
+    def _calculate_metrics(self, results_df: pd.DataFrame) -> Dict:
+        """Calculate performance metrics for a backtest period."""
+
+        if results_df.empty:
+            return {}
+
+        returns = pd.Series(results_df["returns"])
+
+        metrics = {
+            "total_return": float((1 + returns).prod() - 1),
+            "annual_return": float((1 + returns).prod() ** (252 / len(returns)) - 1),
+            "annual_volatility": float(returns.std() * np.sqrt(252)),
+            "sharpe_ratio": float(returns.mean() / returns.std() * np.sqrt(252))
+            if returns.std() > 0
+            else 0,
+            "max_drawdown": float(results_df["drawdown"].min()),
+            "win_rate": float((returns > 0).mean()),
+            "avg_win": float(returns[returns > 0].mean())
+            if len(returns[returns > 0]) > 0
+            else 0,
+            "avg_loss": float(returns[returns < 0].mean())
+            if len(returns[returns < 0]) > 0
+            else 0,
+        }
+
+        return metrics
+
+    def plot_backtest_results(
+        self, results_df: pd.DataFrame, metrics: Dict, title: str = "Backtest Results"
+    ):
+        """Create visualization of backtest results."""
+
+        plt.style.use("seaborn")
+        fig = plt.figure(figsize=(15, 10))
+
+        # Plot 1: Portfolio Value and Drawdown
+        ax1 = plt.subplot(311)
+        ax1.plot(
+            results_df["timestamp"],
+            results_df["portfolio_value"],
+            label="Portfolio Value",
+        )
+        ax1.set_title(f"{title}\nPortfolio Value and Drawdown")
+        ax1.set_ylabel("Portfolio Value")
+
+        ax1_twin = ax1.twinx()
+        ax1_twin.fill_between(
+            results_df["timestamp"],
+            results_df["drawdown"] * 100,
+            0,
+            alpha=0.3,
+            color="red",
+            label="Drawdown %",
+        )
+        ax1_twin.set_ylabel("Drawdown %")
+
+        # Plot 2: Cumulative Returns
+        ax2 = plt.subplot(312)
+        ax2.plot(
+            results_df["timestamp"],
+            results_df["cumulative_returns"],
+            label="Cumulative Returns",
+        )
+        ax2.set_title("Cumulative Returns")
+        ax2.set_ylabel("Cumulative Returns")
+
+        # Plot 3: Trading Signals and Actions
+        ax3 = plt.subplot(313)
+        ax3.plot(
+            results_df["timestamp"], results_df["signal"], label="Signal", alpha=0.5
+        )
+
+        # Plot buy/sell markers
+        buys = results_df[results_df["action"] == 2]
+        sells = results_df[results_df["action"] == 0]
+        holds = results_df[results_df["action"] == 1]
+
+        ax3.scatter(
+            buys["timestamp"], buys["signal"], color="green", marker="^", label="Buy"
+        )
+        ax3.scatter(
+            sells["timestamp"], sells["signal"], color="red", marker="v", label="Sell"
+        )
+        ax3.scatter(
+            holds["timestamp"],
+            holds["signal"],
+            color="gray",
+            marker="o",
+            alpha=0.3,
+            label="Hold",
+        )
+
+        ax3.set_title("Trading Signals and Actions")
+        ax3.set_ylabel("Signal Strength")
+
+        # Add metrics as text
+        metrics_text = (
+            f"Total Return: {metrics['total_return']:.2%}\n"
+            f"Annual Return: {metrics['annual_return']:.2%}\n"
+            f"Annual Vol: {metrics['annual_volatility']:.2%}\n"
+            f"Sharpe Ratio: {metrics['sharpe_ratio']:.2f}\n"
+            f"Max Drawdown: {metrics['max_drawdown']:.2%}\n"
+            f"Win Rate: {metrics['win_rate']:.2%}"
+        )
+
+        plt.figtext(
+            0.02,
+            0.02,
+            metrics_text,
+            fontsize=10,
+            bbox=dict(facecolor="white", alpha=0.8),
+        )
+
+        plt.tight_layout()
+        return fig

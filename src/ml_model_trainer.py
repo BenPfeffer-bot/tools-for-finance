@@ -77,9 +77,7 @@ class MLModelTrainer:
             selector = SelectFromModel(
                 XGBClassifier(random_state=42),
                 threshold="mean",
-                max_features=min(
-                    X.shape[1] - i * 2, X.shape[1] - 5
-                ),  # Vary feature count
+                max_features=min(X.shape[1] - i * 2, X.shape[1] - 5),
             )
             X_selected = selector.fit_transform(X_scaled, y)
 
@@ -87,11 +85,16 @@ class MLModelTrainer:
             n_removed = X.shape[1] - X_selected.shape[1]
             logger.info(f"Removed {n_removed} highly correlated features")
 
+            # Split data
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_selected, y, test_size=0.2, random_state=42
+            )
+
             # Train model
             model = XGBClassifier(
                 n_estimators=self.n_estimators, random_state=42 + i, **config
             )
-            model.fit(X_selected, y)
+            model.fit(X_train, y_train)
 
             # Get feature importance
             importance = model.feature_importances_
@@ -101,10 +104,6 @@ class MLModelTrainer:
                 logger.info(f"{idx}: {importance[idx]:.4f}")
 
             # Evaluate on validation set
-            X_train, X_val, y_train, y_val = train_test_split(
-                X_selected, y, test_size=0.2, random_state=42
-            )
-            model.fit(X_train, y_train)
             y_pred = model.predict_proba(X_val)[:, 1]
             val_auc = roc_auc_score(y_val, y_pred)
             logger.info(f"Model {i + 1} validation AUC: {val_auc:.4f}")

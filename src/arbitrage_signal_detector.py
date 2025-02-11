@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 from typing import Tuple, List, Optional
 from sklearn.preprocessing import StandardScaler
-from src.transfer_entropy import TransferEntropyCalculator
+from transfer_entropy import TransferEntropyCalculator
 import logging
 
 logger = logging.getLogger(__name__)

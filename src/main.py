@@ -65,10 +65,22 @@ def run_eta_strategy(
         # Run backtest
         portfolio_value, metrics = backtester.run_backtest()
 
+        # Generate and save all plots
+        backtester.plot_backtest_results()
+        backtester.plot_position_analysis()
+        backtester.plot_signal_analysis()
+
+        # Save performance report
+        backtester.save_performance_report()
+
         # Log results
         logger.info("\nBacktest Results:")
         for metric, value in metrics.items():
             logger.info(f"{metric}: {value:.2%}")
+
+        logger.info(
+            "\nAll analysis completed. Check the outputs directory for results."
+        )
 
         return portfolio_value, metrics
 
