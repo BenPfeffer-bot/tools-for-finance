@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import sys, os
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -16,6 +16,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import logging
 from typing import Tuple, Dict, Any, Optional, List
+from sklearn.preprocessing import StandardScaler
+from xgboost import XGBClassifier
+from sklearn.feature_selection import SelectFromModel
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from typing import Tuple, Dict, Any
@@ -24,41 +27,198 @@ logger = logging.getLogger(__name__)
 
 
 class MLModelTrainer:
-    """Class for training and evaluating machine learning models."""
+    """
+    Class for training and managing ensemble of ML models.
+    """
 
     def __init__(
-        self,
-        n_estimators: int = 100,
-        learning_rate: float = 0.05,
-        max_depth: int = 4,
-        n_splits: int = 5,
-        random_state: int = 42,
+        self, n_estimators: int = 100, learning_rate: float = 0.1, max_depth: int = 5
     ):
         """
-        Initialize the ML model trainer.
+        Initialize MLModelTrainer.
 
         Args:
-            n_estimators: Number of boosting rounds
-            learning_rate: Learning rate for gradient boosting
+            n_estimators: Number of trees in XGBoost
+            learning_rate: Learning rate for XGBoost
             max_depth: Maximum tree depth
-            n_splits: Number of cross-validation splits
-            random_state: Random seed for reproducibility
         """
         self.n_estimators = n_estimators
         self.learning_rate = learning_rate
         self.max_depth = max_depth
-        self.n_splits = n_splits
-        self.random_state = random_state
+        self.models = []
+        self.feature_names = None
+        self.scaler = StandardScaler()
 
-        # Initialize model
-        self.model = None
-        self.feature_importance = None
-        self.cv_results = None
+        # Model configurations for diversity
+        self.model_configs = [
+            {"max_depth": 3, "learning_rate": 0.1, "subsample": 0.8, "gamma": 0},
+            {"max_depth": 5, "learning_rate": 0.05, "subsample": 0.9, "gamma": 0.1},
+            {"max_depth": 4, "learning_rate": 0.08, "subsample": 0.7, "gamma": 0.2},
+            {"max_depth": 6, "learning_rate": 0.03, "subsample": 0.85, "gamma": 0.15},
+            {"max_depth": 4, "learning_rate": 0.12, "subsample": 0.75, "gamma": 0.05},
+        ]
 
-        logger.info(
-            f"Initialized MLModelTrainer with {n_estimators} estimators, "
-            f"learning rate {learning_rate}, max depth {max_depth}"
-        )
+    def train_models(self, X: np.ndarray, y: np.ndarray) -> None:
+        """
+        Train ensemble of models with different configurations.
+
+        Args:
+            X: Feature matrix
+            y: Target labels
+        """
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X)
+
+        # Train models with different configurations
+        for i, config in enumerate(self.model_configs):
+            logger.info(f"\nTraining model {i + 1}/5")
+
+            # Remove highly correlated features
+            selector = SelectFromModel(
+                XGBClassifier(random_state=42),
+                threshold="mean",
+                max_features=min(
+                    X.shape[1] - i * 2, X.shape[1] - 5
+                ),  # Vary feature count
+            )
+            X_selected = selector.fit_transform(X_scaled, y)
+
+            # Log feature selection
+            n_removed = X.shape[1] - X_selected.shape[1]
+            logger.info(f"Removed {n_removed} highly correlated features")
+
+            # Train model
+            model = XGBClassifier(
+                n_estimators=self.n_estimators, random_state=42 + i, **config
+            )
+            model.fit(X_selected, y)
+
+            # Get feature importance
+            importance = model.feature_importances_
+            top_features = np.argsort(importance)[-5:][::-1]
+            logger.info("Top 5 features by importance:")
+            for idx in top_features:
+                logger.info(f"{idx}: {importance[idx]:.4f}")
+
+            # Evaluate on validation set
+            X_train, X_val, y_train, y_val = train_test_split(
+                X_selected, y, test_size=0.2, random_state=42
+            )
+            model.fit(X_train, y_train)
+            y_pred = model.predict_proba(X_val)[:, 1]
+            val_auc = roc_auc_score(y_val, y_pred)
+            logger.info(f"Model {i + 1} validation AUC: {val_auc:.4f}")
+
+            self.models.append(
+                {"model": model, "selector": selector, "val_score": val_auc}
+            )
+
+    def predict_ensemble(self, X: np.ndarray) -> np.ndarray:
+        """
+        Generate ensemble predictions.
+
+        Args:
+            X: Feature matrix
+
+        Returns:
+            Array of predictions
+        """
+        if not self.models:
+            raise ValueError("Models not trained yet")
+
+        # Scale features
+        X_scaled = self.scaler.transform(X)
+
+        # Get predictions from each model
+        predictions = []
+        weights = []
+
+        for model_dict in self.models:
+            model = model_dict["model"]
+            selector = model_dict["selector"]
+            val_score = model_dict["val_score"]
+
+            # Select features and predict
+            X_selected = selector.transform(X_scaled)
+            pred = model.predict_proba(X_selected)[:, 1]
+
+            predictions.append(pred)
+            weights.append(val_score)
+
+        # Compute weighted average predictions
+        weights = np.array(weights)
+        weights = weights / weights.sum()  # Normalize weights
+
+        ensemble_pred = np.zeros(len(X))
+        for pred, weight in zip(predictions, weights):
+            ensemble_pred += pred * weight
+
+        return ensemble_pred
+
+    def plot_feature_importance(self) -> None:
+        """
+        Plot aggregated feature importance across models.
+        """
+        if not self.models:
+            raise ValueError("Models not trained yet")
+
+        plt.figure(figsize=(12, 6))
+
+        # Aggregate importance across models
+        importance_dict = {}
+        for model_dict in self.models:
+            model = model_dict["model"]
+            importance = model_dict["model"].feature_importances_
+            for i, imp in enumerate(importance):
+                if i not in importance_dict:
+                    importance_dict[i] = []
+                importance_dict[i].append(imp)
+
+        # Compute mean importance
+        mean_importance = {k: np.mean(v) for k, v in importance_dict.items()}
+
+        # Plot top 20 features
+        sorted_features = sorted(
+            mean_importance.items(), key=lambda x: x[1], reverse=True
+        )[:20]
+        feature_ids = [str(f[0]) for f in sorted_features]
+        importance_values = [f[1] for f in sorted_features]
+
+        plt.bar(feature_ids, importance_values)
+        plt.title("Top 20 Features by Importance")
+        plt.xlabel("Feature ID")
+        plt.ylabel("Mean Importance")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig("feature_importance.png")
+        logger.info("Feature importance plot saved as 'feature_importance.png'")
+
+    def plot_learning_curves(self) -> None:
+        """
+        Plot learning curves for the models.
+        """
+        if not self.models:
+            raise ValueError("Models not trained yet")
+
+        plt.figure(figsize=(10, 6))
+
+        for i, model_dict in enumerate(self.models):
+            model = model_dict["model"]
+            results = model.evals_result()
+
+            if results:
+                epochs = len(results["validation_0"]["auc"])
+                x_axis = range(0, epochs)
+                plt.plot(x_axis, results["validation_0"]["auc"], label=f"Model {i + 1}")
+
+        plt.title("Learning Curves")
+        plt.xlabel("Boosting Round")
+        plt.ylabel("AUC Score")
+        plt.legend()
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig("learning_curves.png")
+        logger.info("Learning curves plot saved as 'learning_curves.png'")
 
     def select_features(
         self,
@@ -318,122 +478,6 @@ class MLModelTrainer:
             logger.error(f"Error during cross-validation: {str(e)}")
             raise
 
-    def plot_feature_importance(
-        self, feature_names: Optional[List[str]] = None
-    ) -> None:
-        """
-        Plot aggregated feature importance from the ensemble of models.
-        """
-        if not hasattr(self, "ensemble_models"):
-            logger.error("Must train ensemble first!")
-            return
-
-        try:
-            # Aggregate importance scores across all models
-            importance_dict = {}
-            for model in self.ensemble_models:
-                model_importance = model.get_score(importance_type="gain")
-                for feature, score in model_importance.items():
-                    if feature in importance_dict:
-                        importance_dict[feature] += score
-                    else:
-                        importance_dict[feature] = score
-
-            # Average the scores
-            for feature in importance_dict:
-                importance_dict[feature] /= len(self.ensemble_models)
-
-            if not importance_dict:
-                logger.warning("No feature importance available")
-                return
-
-            # Convert to DataFrame and sort
-            importance_df = pd.DataFrame(
-                list(importance_dict.items()), columns=["Feature", "Importance"]
-            ).sort_values("Importance", ascending=True)
-
-            # Create plot
-            plt.figure(figsize=(12, 8))
-            plt.barh(importance_df["Feature"], importance_df["Importance"], alpha=0.8)
-            plt.title("Ensemble Feature Importance (Average Gain)")
-            plt.xlabel("Importance Score")
-            plt.tight_layout()
-
-            # Save plot
-            plt.savefig("feature_importance.png")
-            plt.close()
-
-            logger.info("Feature importance plot saved as 'feature_importance.png'")
-
-        except Exception as e:
-            logger.error(f"Error plotting feature importance: {str(e)}")
-
-    def plot_learning_curves(self) -> None:
-        """
-        Plot learning curves from all models in the ensemble.
-        """
-        if not hasattr(self, "ensemble_models"):
-            logger.error("Must train ensemble first!")
-            return
-
-        try:
-            fig, axes = plt.subplots(2, 3, figsize=(18, 10))
-            axes = axes.ravel()
-
-            # Plot individual model curves
-            for i, model in enumerate(self.ensemble_models):
-                if i >= 5:  # Only plot first 5 models
-                    break
-
-                if hasattr(model, "eval_results"):
-                    ax = axes[i]
-                    for metric in ["auc", "error"]:
-                        if (
-                            "train" in model.eval_results
-                            and metric in model.eval_results["train"]
-                        ):
-                            ax.plot(
-                                model.eval_results["train"][metric],
-                                label=f"Train {metric.upper()}",
-                            )
-                        if (
-                            "val" in model.eval_results
-                            and metric in model.eval_results["val"]
-                        ):
-                            ax.plot(
-                                model.eval_results["val"][metric],
-                                label=f"Val {metric.upper()}",
-                            )
-
-                    ax.set_title(f"Model {i + 1} Learning Curves")
-                    ax.set_xlabel("Iteration")
-                    ax.set_ylabel("Score")
-                    ax.legend()
-                    ax.grid(True)
-
-            # Plot ensemble metrics in the last subplot
-            ax = axes[-1]
-            cv_metrics = pd.DataFrame(
-                {
-                    "AUC": [0.5736, 0.6862, 0.5598, 0.5880, 0.5861],
-                    "Error": [0.4264, 0.3138, 0.4402, 0.4120, 0.4139],
-                }
-            )
-            cv_metrics.plot(marker="o", ax=ax)
-            ax.set_title("Ensemble Model Metrics")
-            ax.set_xlabel("Model Index")
-            ax.set_ylabel("Score")
-            ax.grid(True)
-
-            plt.tight_layout()
-            plt.savefig("learning_curves.png")
-            plt.close()
-
-            logger.info("Learning curves plot saved as 'learning_curves.png'")
-
-        except Exception as e:
-            logger.error(f"Error plotting learning curves: {str(e)}")
-
     def save_model(self, path: str = "model.json") -> None:
         """
         Save the trained model to a file.
@@ -609,46 +653,4 @@ class MLModelTrainer:
 
         except Exception as e:
             logger.error(f"Error training ensemble: {str(e)}")
-            raise
-
-    def predict_ensemble(
-        self, features: pd.DataFrame, threshold: float = 0.5
-    ) -> np.ndarray:
-        """
-        Make predictions using the ensemble of models with weighted voting.
-        """
-        try:
-            if not hasattr(self, "ensemble_models"):
-                raise ValueError("Must train ensemble first!")
-
-            predictions = []
-            weights = []
-
-            for model in self.ensemble_models:
-                # Ensure features match the model's features
-                features_aligned = features[model.feature_names]
-                dtest = xgb.DMatrix(features_aligned)
-                pred = model.predict(dtest)
-                predictions.append(pred)
-
-                # Use the best_score as weight
-                weights.append(model.best_score)
-
-            # Normalize weights
-            weights = np.array(weights)
-            weights = weights / weights.sum()
-
-            # Compute weighted average predictions
-            ensemble_pred = np.average(predictions, axis=0, weights=weights)
-
-            # Apply threshold with confidence margin
-            confidence_threshold = 0.1
-            final_predictions = np.zeros_like(ensemble_pred)
-            final_predictions[ensemble_pred > (threshold + confidence_threshold)] = 1
-            final_predictions[ensemble_pred < (threshold - confidence_threshold)] = -1
-
-            return final_predictions
-
-        except Exception as e:
-            logger.error(f"Error making ensemble predictions: {str(e)}")
             raise

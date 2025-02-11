@@ -1,5 +1,11 @@
 # main.py
-import sys, os
+import os
+import sys
+
+# Add project root to Python path
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(project_root)
+
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta

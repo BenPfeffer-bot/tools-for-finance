@@ -46,7 +46,7 @@ class Backtester:
             # Compute positions
             self.positions = self.compute_positions()
 
-            # Calculate portfolio returns
+            # Calculate portfolio returns (element-wise multiplication and sum across assets)
             portfolio_returns = (self.returns * self.positions).sum(axis=1)
 
             # Apply transaction costs
@@ -59,6 +59,11 @@ class Backtester:
             # Compute performance metrics
             metrics = self.compute_performance_metrics(portfolio_returns)
 
+            # Log key metrics
+            logger.info("\nBacktest Results:")
+            for metric, value in metrics.items():
+                logger.info(f"{metric}: {value:.2%}")
+
             return self.portfolio_value, metrics
 
         except Exception as e:
@@ -68,49 +73,82 @@ class Backtester:
     def compute_positions(self):
         """
         Compute positions based on model predictions and position sizing rules.
-        Returns a Series of positions indexed by date.
+        Returns a DataFrame of positions indexed by date.
         """
-        # Initialize positions Series
-        positions = pd.Series(0.0, index=self.returns.index)
+        # Initialize positions DataFrame with same structure as returns
+        positions = pd.DataFrame(
+            0.0, index=self.returns.index, columns=self.returns.columns
+        )
 
         # Ensure predictions align with returns index
-        predictions = pd.Series(
+        pred_series = pd.Series(
             self.predictions, index=self.returns.index[-len(self.predictions) :]
         )
-        predictions = predictions.reindex(self.returns.index, fill_value=0)
+        pred_series = pred_series.reindex(self.returns.index, fill_value=0)
 
-        # Compute position sizes based on volatility
+        # Compute rolling volatility and correlation
         volatility = self.returns.rolling(window=20).std()
-        target_vol = 0.02  # Target 2% daily volatility
-        position_sizes = target_vol / volatility.fillna(target_vol)
+        correlation = self.returns.rolling(window=60).corr()
+
+        # Compute position sizes based on volatility targeting
+        target_portfolio_vol = 0.15  # Target 15% annualized portfolio volatility
+        daily_vol_target = target_portfolio_vol / np.sqrt(252)
+
+        # Scale positions by volatility
+        position_sizes = daily_vol_target / (volatility * np.sqrt(252))
         position_sizes = position_sizes.clip(
-            0.1, 1.0
-        )  # Limit position sizes between 0.1 and 1.0
+            -0.5, 0.5
+        )  # Limit individual position sizes
 
-        # Apply positions based on predictions
-        positions[predictions > 0] = position_sizes[predictions > 0]
-        positions[predictions < 0] = -position_sizes[predictions < 0]
+        # Apply positions based on predictions and confidence
+        confidence_threshold = 0.6
+        for col in positions.columns:
+            # Only take positions when prediction confidence is high
+            positions[col] = np.where(
+                abs(pred_series) > confidence_threshold,
+                position_sizes[col] * np.sign(pred_series),
+                0,
+            )
 
-        # Apply stop-loss and take-profit rules
-        cumulative_returns = (1 + self.returns * positions).cumprod()
+        # Risk management rules
+        # 1. Stop trading after significant drawdown
+        portfolio_returns = (self.returns * positions).sum(axis=1)
+        cumulative_returns = (1 + portfolio_returns).cumprod()
         drawdown = cumulative_returns / cumulative_returns.cummax() - 1
+        stop_trading = drawdown < -0.15  # 15% drawdown threshold
+        positions.loc[stop_trading] = 0
 
-        # Stop trading after significant drawdown
-        stop_trading = drawdown < -0.2  # 20% drawdown threshold
-        positions[stop_trading] = 0
+        # 2. Reduce exposure in high volatility regimes
+        vol_ma = volatility.mean(axis=1).rolling(window=60).mean()
+        high_vol_mask = volatility.mean(axis=1) > vol_ma * 1.5
+        positions.loc[high_vol_mask] *= 0.5
 
-        # Reduce position sizes in high volatility
-        high_vol_mask = volatility > volatility.rolling(window=60).mean() * 1.5
-        positions[high_vol_mask] *= 0.5
+        # 3. Portfolio-level position limits
+        gross_exposure = positions.abs().sum(axis=1)
+        net_exposure = positions.sum(axis=1)
+
+        # Limit gross exposure to 200%
+        gross_scaling = pd.Series(1.0, index=positions.index)
+        gross_scaling[gross_exposure > 2.0] = 2.0 / gross_exposure[gross_exposure > 2.0]
+
+        # Limit net exposure to ±100%
+        net_scaling = pd.Series(1.0, index=positions.index)
+        net_scaling[net_exposure > 1.0] = 1.0 / net_exposure[net_exposure > 1.0]
+        net_scaling[net_exposure < -1.0] = -1.0 / net_exposure[net_exposure < -1.0]
+
+        # Apply scaling
+        final_scaling = pd.concat([gross_scaling, net_scaling], axis=1).min(axis=1)
+        for col in positions.columns:
+            positions[col] *= final_scaling
 
         return positions
 
-    def compute_transaction_costs(self, positions: pd.Series) -> pd.Series:
+    def compute_transaction_costs(self, positions: pd.DataFrame) -> pd.Series:
         """
         Compute transaction costs based on position changes.
 
         Args:
-            positions: Series of positions
+            positions: DataFrame of positions
 
         Returns:
             Series of transaction costs
@@ -119,16 +157,16 @@ class Backtester:
         base_cost = 0.001  # 10 bps base cost
         market_impact = 0.0005  # 5 bps market impact
 
-        # Calculate position changes
+        # Calculate absolute position changes for each asset
         position_changes = positions.diff().abs()
 
-        # Compute total transaction costs
-        costs = position_changes * (base_cost + market_impact)
+        # Fill first row with initial position costs
+        position_changes.iloc[0] = positions.iloc[0].abs()
 
-        # Fill first value with initial position cost
-        costs.iloc[0] = abs(positions.iloc[0]) * (base_cost + market_impact)
+        # Compute total transaction costs across all assets
+        total_costs = position_changes.sum(axis=1) * (base_cost + market_impact)
 
-        return costs
+        return total_costs
 
     def compute_performance_metrics(self, returns: pd.Series) -> Dict[str, float]:
         """
@@ -140,6 +178,10 @@ class Backtester:
         Returns:
             Dictionary of performance metrics
         """
+        # Convert returns to series if DataFrame
+        if isinstance(returns, pd.DataFrame):
+            returns = returns.mean(axis=1)
+
         # Annualization factor
         ann_factor = 252  # Trading days per year
 
@@ -149,7 +191,7 @@ class Backtester:
 
         # Risk metrics
         ann_vol = returns.std() * np.sqrt(ann_factor)
-        sharpe_ratio = ann_return / ann_vol if ann_vol != 0 else 0
+        sharpe_ratio = ann_return / ann_vol if ann_vol > 0 else 0
 
         # Drawdown analysis
         cum_returns = (1 + returns).cumprod()

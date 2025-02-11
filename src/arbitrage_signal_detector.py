@@ -13,6 +13,7 @@ class ArbitrageSignalDetector:
     def __init__(
         self,
         returns: pd.DataFrame,
+        eigenportfolios: np.ndarray,
         window: int = 50,
         lag: int = 1,
         te_threshold: float = 2.0,
@@ -22,13 +23,15 @@ class ArbitrageSignalDetector:
         Initialize ArbitrageSignalDetector.
 
         Args:
-            returns: DataFrame of asset/factor returns
+            returns: DataFrame of asset returns
+            eigenportfolios: Array of eigenportfolio weights
             window: Rolling window size for computations
             lag: Time lag for signal detection
             te_threshold: Z-score threshold for transfer entropy signals
             vol_threshold: Volatility threshold for signal filtering
         """
         self.returns = returns
+        self.eigenportfolios = eigenportfolios
         self.window = window
         self.lag = lag
         self.te_threshold = te_threshold
@@ -36,32 +39,30 @@ class ArbitrageSignalDetector:
         self.te_calculator = TransferEntropyCalculator()
         self.scaler = StandardScaler()
 
-    def compute_volatility_features(self) -> pd.DataFrame:
+    def compute_volatility_features(self, returns: pd.DataFrame) -> pd.DataFrame:
         """
-        Compute volatility-based features from returns data.
+        Compute volatility-based features.
+
+        Args:
+            returns: DataFrame of returns
 
         Returns:
-            DataFrame containing volatility features
+            DataFrame of volatility features
         """
-        features = pd.DataFrame(index=self.returns.index)
+        features = pd.DataFrame(index=returns.index)
 
-        # Compute rolling volatility for each eigenportfolio
-        for col in self.returns.columns:
-            features[f"volatility_{col}"] = (
-                self.returns[col].rolling(window=self.window, min_periods=1).std()
-            )
+        # Rolling volatility
+        vol = returns.rolling(window=20).std()
+        mean_vol = vol.mean(axis=1)
+        features["mean_volatility"] = mean_vol
 
-        # Add aggregate volatility measures
-        features["mean_volatility"] = features.mean(axis=1)
-        features["max_volatility"] = features.max(axis=1)
-        features["volatility_dispersion"] = features.std(axis=1)
+        # Volatility regime
+        vol_ma = mean_vol.rolling(window=60).mean()
+        features["vol_regime"] = (mean_vol > vol_ma).astype(int)
 
-        # Add volatility regime indicators
-        vol_ma = features["mean_volatility"].rolling(window=20).mean()
-        vol_std = features["mean_volatility"].rolling(window=20).std()
-        features["vol_regime"] = (features["mean_volatility"] - vol_ma) / vol_std
-        features["high_vol_regime"] = (features["vol_regime"] > 1.0).astype(int)
-        features["low_vol_regime"] = (features["vol_regime"] < -1.0).astype(int)
+        # Cross-sectional features
+        features["vol_dispersion"] = vol.std(axis=1)
+        features["vol_skew"] = vol.skew(axis=1)
 
         return features
 
@@ -122,83 +123,130 @@ class ArbitrageSignalDetector:
 
         return features
 
-    def compute_momentum_features(self) -> pd.DataFrame:
+    def compute_momentum_features(
+        self, returns: pd.DataFrame, windows: list = [5, 10, 20]
+    ) -> pd.DataFrame:
         """
-        Compute momentum-based features.
+        Compute momentum features for each eigenportfolio.
+
+        Args:
+            returns: DataFrame of returns
+            windows: List of lookback windows
+
+        Returns:
+            DataFrame of momentum features
         """
-        features = pd.DataFrame(index=self.returns.index)
+        features = pd.DataFrame(index=returns.index)
 
-        # Compute various momentum indicators
-        for col in self.returns.columns:
-            # Short-term momentum (5, 10 days)
-            for window in [5, 10]:
-                features[f"momentum_{window}d_{col}"] = (
-                    self.returns[col].rolling(window=window).mean()
-                )
+        for window in windows:
+            # Compute rolling mean returns
+            rolling_means = returns.rolling(window=window).mean()
 
-            # Medium-term momentum (20, 50 days)
-            for window in [20, 50]:
-                features[f"momentum_{window}d_{col}"] = (
-                    self.returns[col].rolling(window=window).mean()
-                )
-
-            # Relative strength index
-            delta = self.returns[col]
-            gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-            rs = gain / loss
-            features[f"rsi_{col}"] = 100 - (100 / (1 + rs))
+            # Add features for each factor
+            for i in range(returns.shape[1]):
+                features[f"momentum_{window}d_Factor_{i + 1}"] = rolling_means.iloc[
+                    :, i
+                ]
 
         return features
 
-    def generate_labels(self, returns: Optional[pd.DataFrame] = None) -> pd.Series:
+    def compute_rsi(self, returns: pd.DataFrame, window: int = 14) -> pd.DataFrame:
         """
-        Generate binary labels based on future returns.
+        Compute RSI for each eigenportfolio.
 
         Args:
-            returns: DataFrame of returns (uses self.returns if None)
+            returns: DataFrame of returns
+            window: Lookback window
+
+        Returns:
+            DataFrame of RSI values
+        """
+        features = pd.DataFrame(index=returns.index)
+
+        for i in range(returns.shape[1]):
+            # Separate gains and losses
+            gains = returns.iloc[:, i].copy()
+            losses = returns.iloc[:, i].copy()
+            gains[gains < 0] = 0
+            losses[losses > 0] = 0
+            losses = abs(losses)
+
+            # Compute RSI
+            avg_gain = gains.rolling(window=window).mean()
+            avg_loss = losses.rolling(window=window).mean()
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+
+            features[f"rsi_Factor_{i + 1}"] = rsi
+
+        return features
+
+    def generate_labels(
+        self, returns: pd.DataFrame, threshold: float = 0.02
+    ) -> pd.Series:
+        """
+        Generate trading signals based on future returns.
+
+        Args:
+            returns: DataFrame of returns
+            threshold: Return threshold for positive label
 
         Returns:
             Series of binary labels
         """
-        if returns is None:
-            returns = self.returns
+        # First shift returns to get future values
+        future_returns = returns.shift(-5)
 
-        if returns.empty:
-            logger.error("No returns data for label generation")
-            return pd.Series()
+        # Then compute rolling sum of the shifted returns
+        forward_returns = future_returns.rolling(window=5).sum()
 
-        try:
-            # Calculate future returns (mean across all eigenportfolios)
-            future_returns = returns.mean(axis=1).shift(-self.lag)
+        # Generate labels based on mean forward return
+        mean_forward_returns = forward_returns.mean(axis=1)
+        labels = (mean_forward_returns > threshold).astype(int)
 
-            # Calculate rolling volatility with shorter window
-            volatility = returns.mean(axis=1).rolling(window=20).std()
+        # Remove labels that use future data
+        labels = labels[:-5]
 
-            # Generate labels with adaptive threshold
-            # Signal if return exceeds 1.0 * volatility (more signals)
-            # or if return is less than -1.0 * volatility (catch downside moves)
-            labels = (
-                (future_returns.abs() > 1.0 * volatility)
-                & (future_returns.abs() > 0.001)
-            ).astype(int)  # Minimum return threshold
+        n_positive = labels.sum()
+        logger.info(
+            f"Generated {len(labels)} labels with {n_positive} positive cases ({n_positive / len(labels):.1%} positive rate)"
+        )
 
-            # Remove NaN values
-            labels = labels.dropna()
+        return labels
 
-            # Log label statistics
-            positive_labels = labels.sum()
-            total_labels = len(labels)
-            logger.info(
-                f"Generated {total_labels} labels with {positive_labels} positive cases "
-                f"({positive_labels / total_labels:.1%} positive rate)"
-            )
+    def generate_features_and_labels(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Generate features and labels for machine learning.
 
-            return labels
+        Returns:
+            tuple: (features array, labels array)
+        """
+        # Project returns onto eigenportfolios
+        factor_returns = pd.DataFrame(
+            np.dot(self.returns, self.eigenportfolios.T), index=self.returns.index
+        )
 
-        except Exception as e:
-            logger.error(f"Error generating labels: {str(e)}")
-            raise
+        # Compute features
+        momentum_features = self.compute_momentum_features(factor_returns)
+        rsi_features = self.compute_rsi(factor_returns)
+        vol_features = self.compute_volatility_features(factor_returns)
+
+        # Combine all features
+        features = pd.concat([momentum_features, rsi_features, vol_features], axis=1)
+
+        # Generate labels
+        labels = self.generate_labels(factor_returns)
+
+        # Align features and labels
+        features = features[:-5]  # Remove last 5 rows that don't have labels
+        features = features.dropna()  # Remove any rows with missing features
+        labels = labels[features.index]  # Align labels with features
+
+        logger.info(
+            f"Generated {len(features)} samples with {features.shape[1]} features"
+        )
+
+        return features.values, labels.values
 
     def detect_opportunities(self) -> Tuple[pd.DataFrame, pd.Series, pd.DatetimeIndex]:
         """
@@ -206,15 +254,15 @@ class ArbitrageSignalDetector:
         """
         try:
             # Generate labels first
-            labels = self.generate_labels()
+            labels = self.generate_labels(self.returns)
             if labels.empty:
                 logger.error("No valid labels generated")
                 return pd.DataFrame(), pd.Series(), pd.DatetimeIndex([])
 
             # Compute features
-            vol_features = self.compute_volatility_features()
+            vol_features = self.compute_volatility_features(self.returns)
             corr_features = self.compute_correlation_features()
-            momentum_features = self.compute_momentum_features()
+            momentum_features = self.compute_momentum_features(self.returns)
 
             # Add market regime features
             regime_features = pd.DataFrame(index=self.returns.index)
