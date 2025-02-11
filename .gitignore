@@ -1,7 +1,10 @@
 .env
 
 venv/
+data/
 cache/
 
 .DS_Store
 *__pycache__/
+
+training.log

@@ -5,8 +5,12 @@ from pathlib import Path
 import sys
 import yfinance as yf
 import logging
-from typing import Optional, Union, List, Tuple
+from typing import Optional, Union, List, Tuple, Dict
 from datetime import datetime, timedelta
+import requests
+from alpha_vantage.timeseries import TimeSeries
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 # sys.path.append("/Users/benpfeffer/Desktop/CODE/tools-for-finance/src/")
 
@@ -26,6 +30,247 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
+
+
+class DataProvider:
+    """Base class for data providers"""
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key
+
+    def fetch_intraday_data(
+        self, ticker: str, start_date: datetime, end_date: datetime, interval: str
+    ) -> pd.DataFrame:
+        raise NotImplementedError
+
+
+class AlphaVantageProvider(DataProvider):
+    """Alpha Vantage data provider"""
+
+    def __init__(self, api_key: str):
+        super().__init__(api_key)
+        self.ts = TimeSeries(key=api_key, output_format="pandas")
+        self.rate_limit = 5  # calls per minute for free tier
+        self.last_call_time = 0
+
+    def _rate_limit_handler(self):
+        """Handle API rate limiting"""
+        current_time = time.time()
+        time_passed = current_time - self.last_call_time
+        if time_passed < 60 / self.rate_limit:
+            time.sleep((60 / self.rate_limit) - time_passed)
+        self.last_call_time = time.time()
+
+    def fetch_intraday_data(
+        self,
+        ticker: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "5min",
+    ) -> pd.DataFrame:
+        try:
+            self._rate_limit_handler()
+            data, meta_data = self.ts.get_intraday(
+                symbol=ticker, interval=interval, outputsize="full"
+            )
+            data = data.loc[start_date:end_date]
+            return data
+        except Exception as e:
+            logger.error(
+                f"Error fetching data from Alpha Vantage for {ticker}: {str(e)}"
+            )
+            return pd.DataFrame()
+
+
+class EuronextProvider(DataProvider):
+    """Euronext data provider"""
+
+    def __init__(self, api_key: Optional[str] = None):
+        super().__init__(api_key)
+        self.base_url = "https://live.euronext.com/ajax/getHistoricalPriceData"
+
+    def fetch_intraday_data(
+        self,
+        ticker: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "5min",
+    ) -> pd.DataFrame:
+        try:
+            params = {
+                "instrumentId": ticker,
+                "from": start_date.strftime("%Y-%m-%d"),
+                "to": end_date.strftime("%Y-%m-%d"),
+                "resolution": interval,
+            }
+            response = requests.get(self.base_url, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                return pd.DataFrame(data["data"])
+            else:
+                logger.error(
+                    f"Error fetching data from Euronext for {ticker}: {response.status_code}"
+                )
+                return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Error fetching data from Euronext for {ticker}: {str(e)}")
+            return pd.DataFrame()
+
+
+class IntradayDataLoader:
+    """Enhanced data loader for intraday data"""
+
+    def __init__(
+        self,
+        tickers: List[str],
+        provider: str = "alpha_vantage",
+        api_key: Optional[str] = None,
+        data_dir: Union[str, Path] = MARKET_DATA_DIR,
+    ):
+        self.tickers = tickers
+        self.data_dir = Path(data_dir)
+        self.provider = self._initialize_provider(provider, api_key)
+        self.cache_dir = self.data_dir / "cache"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _initialize_provider(
+        self, provider: str, api_key: Optional[str]
+    ) -> DataProvider:
+        """Initialize the specified data provider"""
+        providers = {
+            "alpha_vantage": AlphaVantageProvider,
+            "euronext": EuronextProvider,
+        }
+
+        if provider not in providers:
+            raise ValueError(f"Unsupported provider: {provider}")
+
+        return providers[provider](api_key)
+
+    def _get_cache_path(
+        self, ticker: str, start_date: datetime, end_date: datetime, interval: str
+    ) -> Path:
+        """Generate cache file path"""
+        cache_file = f"{ticker}_{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}_{interval}.parquet"
+        return self.cache_dir / cache_file
+
+    def fetch_data(
+        self,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "5min",
+        use_cache: bool = True,
+        batch_size: int = 5,
+    ) -> pd.DataFrame:
+        """
+        Fetch intraday data for multiple tickers
+
+        Args:
+            start_date: Start date for data fetching
+            end_date: End date for data fetching
+            interval: Data interval (e.g., '1min', '5min', '15min', '30min', '60min')
+            use_cache: Whether to use cached data
+            batch_size: Number of tickers to process in parallel
+
+        Returns:
+            DataFrame containing intraday data for all tickers
+        """
+        all_data = []
+
+        def process_ticker(ticker: str) -> pd.DataFrame:
+            cache_path = self._get_cache_path(ticker, start_date, end_date, interval)
+
+            # Try to load from cache first
+            if use_cache and cache_path.exists():
+                try:
+                    return pd.read_parquet(cache_path)
+                except Exception as e:
+                    logger.warning(f"Error reading cache for {ticker}: {str(e)}")
+
+            # Fetch fresh data
+            df = self.provider.fetch_intraday_data(
+                ticker, start_date, end_date, interval
+            )
+
+            if not df.empty:
+                df["Ticker"] = ticker
+                # Save to cache
+                if use_cache:
+                    try:
+                        df.to_parquet(cache_path)
+                    except Exception as e:
+                        logger.warning(f"Error saving cache for {ticker}: {str(e)}")
+
+            return df
+
+        # Process tickers in parallel batches
+        with ThreadPoolExecutor(max_workers=batch_size) as executor:
+            results = list(executor.map(process_ticker, self.tickers))
+
+        # Combine all data
+        all_data = pd.concat([df for df in results if not df.empty], axis=0)
+
+        if all_data.empty:
+            logger.warning("No data retrieved for any tickers")
+            return pd.DataFrame()
+
+        logger.info(
+            f"Successfully loaded data for {len(results)}/{len(self.tickers)} tickers"
+        )
+        return all_data
+
+    def process_intraday_data(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Process intraday data with additional features
+
+        Args:
+            df: Raw intraday data
+
+        Returns:
+            Processed DataFrame with additional features
+        """
+        if df.empty:
+            return df
+
+        df = df.copy()
+
+        try:
+            # Calculate returns
+            df["intraday_return"] = df.groupby("Ticker")["Close"].pct_change()
+            df["log_return"] = np.log(df.groupby("Ticker")["Close"].pct_change() + 1)
+
+            # Calculate volatility using Garman-Klass estimator
+            df["GK_volatility"] = np.sqrt(
+                0.5 * np.log(df["High"] / df["Low"]) ** 2
+                - (2 * np.log(2) - 1) * np.log(df["Close"] / df["Open"]) ** 2
+            )
+
+            # Volume analysis
+            df["volume_ma"] = df.groupby("Ticker")["Volume"].transform(
+                lambda x: x.rolling(window=12, min_periods=1).mean()
+            )
+            df["relative_volume"] = df["Volume"] / df["volume_ma"]
+
+            # Price momentum
+            for window in [12, 26, 50]:
+                df[f"momentum_{window}"] = df.groupby("Ticker")["Close"].transform(
+                    lambda x: x.pct_change(periods=window)
+                )
+
+            # VWAP
+            df["VWAP"] = (df["Volume"] * df["Close"]).groupby(
+                df["Ticker"]
+            ).cumsum() / df["Volume"].groupby(df["Ticker"]).cumsum()
+
+            logger.info(
+                f"Successfully processed intraday data. Final shape: {df.shape}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error processing intraday data: {str(e)}")
+            raise
+
+        return df
 
 
 class DataLoader:
@@ -152,6 +397,11 @@ class DataLoader:
         # Compute returns
         self.returns_matrix = prices.pct_change().dropna()
         logger.info(f"Final returns matrix shape: {self.returns_matrix.shape}")
+
+        # Save returns matrix to file
+        processed_dir = PROCESSED
+        processed_dir.mkdir(parents=True, exist_ok=True)
+        self.returns_matrix.to_csv(processed_dir / "returns.csv")
 
         return self.returns_matrix
 

@@ -11,11 +11,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__))).parent
 
 # Data directories
-CACHE_DIR = PROJECT_ROOT / "cache"
-FIGURES_DIR = CACHE_DIR / "fig"
+DATA_DIR = PROJECT_ROOT / "data"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 
 # Market data
-DB = CACHE_DIR / "db"
+DB = DATA_DIR
 RAW = DB / "raw"
 PROCESSED = DB / "processed"
 COMPILED = DB / "compiled"
@@ -25,7 +25,7 @@ MARKET_DATA_DIR = RAW / "market_data"
 FUNDAMENTAL_DATA_DIR = RAW / "fundamental_data"
 NEWS_DATA_DIR = RAW / "news_data"
 
-HISTORY = CACHE_DIR / "history"
+HISTORY = DATA_DIR / "history"
 # Backtesting
 # BACKTESTING_DIR = DATA_DIR / "backtesting"
 
@@ -101,11 +101,91 @@ TICKERS = [
 # # Optimization parameters
 # OPTIMIZATION = {"n_initial_points": 10, "n_iterations": 50, "exploration_weight": 0.1}
 
+# Data Provider Settings
+DATA_PROVIDERS = {
+    "alpha_vantage": {
+        "api_key": None,  # Set your Alpha Vantage API key here
+        "rate_limit": 5,  # Calls per minute (free tier)
+        "intervals": ["1min", "5min", "15min", "30min", "60min"],
+    },
+    "euronext": {
+        "api_key": None,  # Optional Euronext API key
+        "intervals": ["5min", "15min", "30min", "60min"],
+    },
+}
+
+# Updated EuroStoxx50 tickers with exchange suffixes
+EURONEXT_TICKERS = [
+    # France - Euronext Paris
+    "AI.PA",  # Air Liquide
+    "AIR.PA",  # Airbus
+    "ALO.PA",  # Alstom
+    "BN.PA",  # Danone
+    "BNP.PA",  # BNP Paribas
+    "CA.PA",  # Carrefour
+    "CAP.PA",  # Capgemini
+    "CS.PA",  # AXA
+    "DG.PA",  # Vinci
+    "ENGI.PA",  # Engie
+    "KER.PA",  # Kering
+    "MC.PA",  # LVMH
+    "OR.PA",  # L'Oreal
+    "RI.PA",  # Pernod Ricard
+    "SAN.PA",  # Sanofi
+    "SGO.PA",  # Saint Gobain
+    "VIE.PA",  # Veolia
+    # Netherlands - Euronext Amsterdam
+    "AD.AS",  # Ahold Delhaize
+    "ADYEN.AS",  # Adyen
+    "ASML.AS",  # ASML Holding
+    "INGA.AS",  # ING Group
+    "PHIA.AS",  # Philips
+    "PRX.AS",  # Prosus
+    # Belgium - Euronext Brussels
+    "ABI.BR",  # AB InBev
+    "SOLB.BR",  # Solvay
+    "UCB.BR",  # UCB
+    # Germany - Deutsche Börse
+    "ADS.DE",  # Adidas
+    "ALV.DE",  # Allianz
+    "BAS.DE",  # BASF
+    "BAYN.DE",  # Bayer
+    "BMW.DE",  # BMW
+    "DTG.DE",  # Daimler Truck
+    "DTE.DE",  # Deutsche Telekom
+    "HEI.DE",  # HeidelbergCement
+    "IFX.DE",  # Infineon
+    "SIE.DE",  # Siemens
+    "VOW3.DE",  # Volkswagen
+]
+
+# Intraday Data Settings
+INTRADAY_SETTINGS = {
+    "default_interval": "5min",
+    "cache_expiry_days": 1,  # How long to keep cached data
+    "batch_size": 5,  # Number of parallel requests
+    "retries": 3,  # Number of retry attempts
+    "retry_delay": 5,  # Seconds between retries
+}
+
+# Market Hours (UTC)
+MARKET_HOURS = {
+    "Euronext": {
+        "open": "07:00",
+        "close": "15:30",
+    },
+    "Deutsche Börse": {
+        "open": "07:00",
+        "close": "15:30",
+    },
+}
+
 # Create directories if they don't exist
 for directory in [
-    CACHE_DIR,
-    FIGURES_DIR,
+    DATA_DIR,
+    OUTPUTS_DIR,
     DB,
+    RAW,
     PROCESSED,
     COMPILED,
     MARKET_DATA_DIR,
@@ -113,4 +193,11 @@ for directory in [
     NEWS_DATA_DIR,
     HISTORY,
 ]:
+    directory.mkdir(parents=True, exist_ok=True)
+
+# Create additional necessary directories
+CACHE_DIR = DATA_DIR / "cache"
+INTRADAY_DATA_DIR = DATA_DIR / "intraday"
+
+for directory in [CACHE_DIR, INTRADAY_DATA_DIR]:
     directory.mkdir(parents=True, exist_ok=True)

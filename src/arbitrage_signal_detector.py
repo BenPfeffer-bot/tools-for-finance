@@ -1,4 +1,20 @@
-# arbitrage_signal_detector.py
+"""
+This module implements arbitrage signal detection using various market features and metrics.
+
+The ArbitrageSignalDetector class analyzes market data to identify potential arbitrage
+opportunities by combining multiple features like volatility, correlation, momentum and
+transfer entropy. It generates features and labels for machine learning models.
+
+Key components:
+- Feature generation from market data
+- Label generation based on forward returns
+- Regime detection and feature interactions
+- Signal detection combining multiple metrics
+
+Author: Ben Pfeffer
+Created: 2024-01-15
+"""
+
 import numpy as np
 import pandas as pd
 from typing import Tuple, List, Optional
@@ -10,6 +26,24 @@ logger = logging.getLogger(__name__)
 
 
 class ArbitrageSignalDetector:
+    """
+    Detects arbitrage opportunities using market features and machine learning.
+
+    Analyzes market data to identify potential arbitrage opportunities by combining
+    multiple features like volatility, correlation, momentum and transfer entropy.
+    Generates features and labels for training ML models.
+
+    Attributes:
+        returns (pd.DataFrame): Asset returns data
+        eigenportfolios (np.ndarray): Eigenportfolio weights
+        window (int): Rolling window size for computations
+        lag (int): Time lag for signal detection
+        te_threshold (float): Z-score threshold for transfer entropy signals
+        vol_threshold (float): Volatility threshold for signal filtering
+        te_calculator (TransferEntropyCalculator): For computing transfer entropy
+        scaler (StandardScaler): For feature scaling
+    """
+
     def __init__(
         self,
         returns: pd.DataFrame,
@@ -43,6 +77,11 @@ class ArbitrageSignalDetector:
         """
         Compute volatility-based features.
 
+        Calculates various volatility metrics including:
+        - Rolling volatility
+        - Volatility regime indicators
+        - Cross-sectional volatility features
+
         Args:
             returns: DataFrame of returns
 
@@ -70,6 +109,11 @@ class ArbitrageSignalDetector:
         """
         Compute correlation-based features from returns data.
 
+        Calculates:
+        - Pairwise correlations between eigenportfolios
+        - Aggregate correlation measures
+        - Correlation dispersion metrics
+
         Returns:
             DataFrame containing correlation features
         """
@@ -93,7 +137,17 @@ class ArbitrageSignalDetector:
         return features
 
     def compute_te_features(self) -> pd.DataFrame:
-        """Compute transfer entropy based features."""
+        """
+        Compute transfer entropy based features.
+
+        Calculates:
+        - Pairwise transfer entropy between assets
+        - Causality shift detection
+        - Transfer entropy z-scores
+
+        Returns:
+            DataFrame with transfer entropy features
+        """
         features = pd.DataFrame(index=self.returns.index)
 
         if isinstance(self.returns, pd.DataFrame) and self.returns.shape[1] > 1:
@@ -129,6 +183,9 @@ class ArbitrageSignalDetector:
         """
         Compute momentum features for each eigenportfolio.
 
+        Calculates rolling mean returns over multiple lookback windows
+        to capture momentum effects at different time scales.
+
         Args:
             returns: DataFrame of returns
             windows: List of lookback windows
@@ -153,6 +210,9 @@ class ArbitrageSignalDetector:
     def compute_rsi(self, returns: pd.DataFrame, window: int = 14) -> pd.DataFrame:
         """
         Compute RSI for each eigenportfolio.
+
+        Calculates the Relative Strength Index technical indicator
+        to identify overbought/oversold conditions.
 
         Args:
             returns: DataFrame of returns
@@ -187,6 +247,9 @@ class ArbitrageSignalDetector:
         """
         Generate trading signals based on future returns.
 
+        Creates binary labels by comparing forward returns
+        to a threshold value.
+
         Args:
             returns: DataFrame of returns
             threshold: Return threshold for positive label
@@ -217,6 +280,9 @@ class ArbitrageSignalDetector:
     def generate_features_and_labels(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Generate features and labels for machine learning.
+
+        Combines multiple feature sets and aligns them with labels
+        for training ML models.
 
         Returns:
             tuple: (features array, labels array)
@@ -251,6 +317,12 @@ class ArbitrageSignalDetector:
     def detect_opportunities(self) -> Tuple[pd.DataFrame, pd.Series, pd.DatetimeIndex]:
         """
         Detect arbitrage opportunities using various features and metrics.
+
+        Combines multiple feature sets and market regime indicators
+        to identify potential arbitrage opportunities.
+
+        Returns:
+            tuple: (features DataFrame, labels Series, timestamps Index)
         """
         try:
             # Generate labels first
