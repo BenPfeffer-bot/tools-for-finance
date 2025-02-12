@@ -14,10 +14,14 @@ import torch
 import matplotlib.pyplot as plt
 from typing import Dict, List, Tuple
 
-from forex_data_loader import ForexDataLoader
-from reinforcement.forex_trading_env import ForexTradingEnvironment
-from reinforcement.rl_models import RLTrader
-from deep_learning.dl_models import LSTMArbitrageDetector
+# Add project root to Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.data.forex_data_loader import ForexDataLoader
+from src.reinforcement.forex_trading_env import ForexTradingEnvironment
+from src.reinforcement.rl_models import RLTrader
+from src.deep_learning.dl_models import LSTMArbitrageDetector
+from src.config.paths import *
 
 # Configure logging
 logging.basicConfig(
@@ -25,7 +29,9 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(
-            f"logs/forex_training_{datetime.now().strftime('%Y%m%d')}.log"
+            PROJECT_ROOT
+            / "logs"
+            / f"forex_training_{datetime.now().strftime('%Y%m%d')}.log"
         ),
         logging.StreamHandler(),
     ],
@@ -63,10 +69,6 @@ class ForexStrategyTrainer:
 
         # Initialize data loader
         self.data_loader = ForexDataLoader(pairs=pairs)
-
-        # Create output directories
-        os.makedirs("models/forex", exist_ok=True)
-        os.makedirs("outputs/forex", exist_ok=True)
 
         logger.info(f"Initialized ForexStrategyTrainer with {len(pairs)} pairs")
 
@@ -176,7 +178,7 @@ class ForexStrategyTrainer:
 
             # Save model periodically
             if (episode + 1) % 100 == 0:
-                self.save_model(agent, f"models/forex/agent_episode_{episode + 1}.pth")
+                self.save_model(agent, RL_MODELS / f"agent_episode_{episode + 1}.pth")
 
         # Plot training curves
         self._plot_training_curves(metrics)
@@ -298,7 +300,7 @@ class ForexStrategyTrainer:
         axes[1, 1].set_ylabel("Total Return")
 
         plt.tight_layout()
-        plt.savefig("outputs/forex/training_curves.png")
+        plt.savefig(PLOTS_DIR / "training_curves.png")
         plt.close()
 
 
@@ -323,7 +325,7 @@ def main():
         )
 
         # Save final model
-        trainer.save_model(agent, "models/forex/final_model.pth")
+        trainer.save_model(agent, RL_MODELS / "final_model.pth")
 
         # Final validation
         final_metrics = trainer.validate_strategy(agent, val_data)

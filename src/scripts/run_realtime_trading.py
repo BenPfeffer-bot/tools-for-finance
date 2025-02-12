@@ -18,7 +18,8 @@ from pathlib import Path
 # Add src directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config.settings.settings import TICKERS, MARKET_HOURS
+from src.config.settings import TICKERS, MARKET_HOURS
+from src.config.paths import *
 from src import RealTimeStrategy
 
 # Configure logging
@@ -26,7 +27,9 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(f"logs/trading_{datetime.now().strftime('%Y%m%d')}.log"),
+        logging.FileHandler(
+            PROJECT_ROOT / "logs" / f"trading_{datetime.now().strftime('%Y%m%d')}.log"
+        ),
         logging.StreamHandler(),
     ],
 )
@@ -44,11 +47,6 @@ class TradingSession:
     def initialize(self):
         """Initialize trading strategy and resources."""
         try:
-            # Create necessary directories
-            os.makedirs("logs", exist_ok=True)
-            os.makedirs("data/market_data", exist_ok=True)
-            os.makedirs("outputs/trades", exist_ok=True)
-
             # Load configuration
             config = self._load_config()
 
@@ -79,7 +77,7 @@ class TradingSession:
             Dictionary of configuration parameters
         """
         try:
-            config_path = Path("config/trading_config.json")
+            config_path = PROJECT_ROOT / "config" / "trading_config.json"
 
             if not config_path.exists():
                 # Create default config if not exists
@@ -93,7 +91,7 @@ class TradingSession:
                     "transaction_cost": 0.001,
                 }
 
-                os.makedirs(config_path.parent, exist_ok=True)
+                config_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(config_path, "w") as f:
                     json.dump(default_config, f, indent=4)
 
@@ -157,7 +155,7 @@ class TradingSession:
         """Generate and save performance report."""
         try:
             # Load trading history
-            with open("trading_history.json", "r") as f:
+            with open(TRADES_DIR / "trading_history.json", "r") as f:
                 history = json.load(f)
 
             # Convert to DataFrame
@@ -191,7 +189,10 @@ class TradingSession:
             }
 
             # Save report
-            report_path = f"outputs/reports/performance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            report_path = (
+                REPORTS_DIR
+                / f"performance_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            )
             with open(report_path, "w") as f:
                 json.dump(report, f, indent=4, default=str)
 

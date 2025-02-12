@@ -18,15 +18,23 @@ import json
 import signal
 from typing import Dict, List
 
-from paper_trading_simulation import PaperTradingSimulation
-from config import TICKERS
+# Add project root to Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src.simulation.paper_trading_simulation import PaperTradingSimulation
+from src.config.settings import TICKERS
+from src.config.paths import *
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
-        logging.FileHandler(f"logs/simulation_{datetime.now().strftime('%Y%m%d')}.log"),
+        logging.FileHandler(
+            PROJECT_ROOT
+            / "logs"
+            / f"simulation_{datetime.now().strftime('%Y%m%d')}.log"
+        ),
         logging.StreamHandler(),
     ],
 )
@@ -40,30 +48,9 @@ class SimulationManager:
         """Initialize simulation manager."""
         self.tickers = tickers
         self.simulation = None
-        self.results_dir = Path("outputs")
-
-        # Create directories
-        self._setup_directories()
+        self.results_dir = OUTPUTS_DIR
 
         logger.info("Simulation manager initialized")
-
-    def _setup_directories(self):
-        """Create necessary directories."""
-        directories = [
-            "logs",
-            "outputs/reports/daily",
-            "outputs/reports/weekly",
-            "outputs/reports/monthly",
-            "outputs/plots/daily",
-            "outputs/plots/weekly",
-            "outputs/plots/monthly",
-            "outputs/signals",
-            "outputs/performance",
-            "outputs/analysis",
-        ]
-
-        for directory in directories:
-            os.makedirs(directory, exist_ok=True)
 
     def start_simulation(self):
         """Start paper trading simulation."""
@@ -130,7 +117,7 @@ class SimulationManager:
     def _load_reports(self, period: str) -> List[Dict]:
         """Load reports for given period."""
         reports = []
-        report_dir = self.results_dir / "reports" / period
+        report_dir = REPORTS_DIR / period
 
         for file in report_dir.glob("*.json"):
             try:
@@ -163,7 +150,7 @@ class SimulationManager:
             }
 
             # Save summary
-            with open("outputs/analysis/performance_summary.json", "w") as f:
+            with open(ANALYSIS_DIR / "performance_summary.json", "w") as f:
                 json.dump(summary, f, indent=4)
 
             # Generate performance plots
@@ -263,7 +250,7 @@ class SimulationManager:
             axes[2, 1].set_ylabel("Win Rate")
 
             plt.tight_layout()
-            plt.savefig("outputs/analysis/performance_metrics.png")
+            plt.savefig(ANALYSIS_DIR / "performance_metrics.png")
             plt.close()
 
         except Exception as e:
@@ -278,7 +265,7 @@ class SimulationManager:
         """Analyze trading patterns and behavior."""
         try:
             # Load trading history
-            with open("trading_history.json", "r") as f:
+            with open(TRADES_DIR / "trading_history.json", "r") as f:
                 history = json.load(f)
 
             trades = pd.DataFrame(history["trades"])
@@ -296,7 +283,7 @@ class SimulationManager:
             }
 
             # Save metrics
-            with open("outputs/analysis/trading_patterns.json", "w") as f:
+            with open(ANALYSIS_DIR / "trading_patterns.json", "w") as f:
                 json.dump(trade_metrics, f, indent=4)
 
             # Generate trade analysis plots
@@ -339,7 +326,7 @@ class SimulationManager:
             axes[1, 1].set_ylabel("Cumulative P&L")
 
             plt.tight_layout()
-            plt.savefig("outputs/analysis/trade_analysis.png")
+            plt.savefig(ANALYSIS_DIR / "trade_analysis.png")
             plt.close()
 
         except Exception as e:
@@ -349,7 +336,7 @@ class SimulationManager:
         """Analyze trading signals and their effectiveness."""
         try:
             # Load signal history
-            signals_df = pd.read_csv("outputs/signals/signal_history.csv")
+            signals_df = pd.read_csv(SIGNALS_DIR / "signal_history.csv")
 
             # Calculate signal metrics
             signal_metrics = {
@@ -365,7 +352,7 @@ class SimulationManager:
             }
 
             # Save metrics
-            with open("outputs/analysis/signal_metrics.json", "w") as f:
+            with open(ANALYSIS_DIR / "signal_metrics.json", "w") as f:
                 json.dump(signal_metrics, f, indent=4)
 
             # Generate signal analysis plots
@@ -409,7 +396,7 @@ class SimulationManager:
             axes[1, 1].set_ylabel("Average Signal Strength")
 
             plt.tight_layout()
-            plt.savefig("outputs/analysis/signal_analysis.png")
+            plt.savefig(ANALYSIS_DIR / "signal_analysis.png")
             plt.close()
 
         except Exception as e:

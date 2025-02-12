@@ -11,6 +11,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.reinforcement.rl_models import RLTrader, TradingEnvironment
 from src.backtesting.backtester import StrategyBacktester
+from src.config.paths import *
 
 # Configure logging
 logging.basicConfig(
@@ -31,9 +32,9 @@ def main():
 
     try:
         returns = pd.read_csv(
-            "data/processed/returns.csv", index_col=0, parse_dates=True
+            PROCESSED_DATA / "returns.csv", index_col=0, parse_dates=True
         )
-        predictions = np.load("outputs/predictions/combined_predictions.npy")
+        predictions = np.load(SIGNALS_DIR / "combined_predictions.npy")
     except FileNotFoundError as e:
         logger.error(f"Required data files not found: {str(e)}")
         logger.info("Please ensure you have run the training script first")
@@ -48,7 +49,7 @@ def main():
         agent = RLTrader(
             env=env, state_dim=env._get_state().shape[0], action_dim=3, hidden_dim=128
         )
-        agent.load_model("outputs/models/rl_model.pth")
+        agent.load_model(ML_MODELS / "rl_model.pth")
     except Exception as e:
         logger.error(f"Error loading the trained agent: {str(e)}")
         return
@@ -69,12 +70,12 @@ def main():
         fig = backtester.plot_backtest_results(
             full_results_df, full_metrics, "Full Period Backtest Results"
         )
-        plt.savefig("outputs/plots/full_period_backtest.png")
+        plt.savefig(PLOTS_DIR / "full_period_backtest.png")
         plt.close()
 
         # Save full period metrics
         pd.DataFrame([full_metrics]).to_csv(
-            "outputs/reports/full_period_metrics.csv", index=False
+            BACKTEST_DIR / "full_period_metrics.csv", index=False
         )
     except Exception as e:
         logger.error(f"Error in full period backtest: {str(e)}")
@@ -109,14 +110,14 @@ def main():
                     f"Backtest Results ({start_date.date()} to {end_date.date()})",
                 )
                 plt.savefig(
-                    f"outputs/plots/backtest_{start_date.date()}_{end_date.date()}.png"
+                    PLOTS_DIR / f"backtest_{start_date.date()}_{end_date.date()}.png"
                 )
                 plt.close()
 
             # Save summary to CSV
             summary_df = pd.DataFrame(summary)
             summary_df.to_csv(
-                f"outputs/reports/rolling_backtest_summary_{period_length}d.csv",
+                BACKTEST_DIR / f"rolling_backtest_summary_{period_length}d.csv",
                 index=False,
             )
 
@@ -139,7 +140,7 @@ def main():
             plt.ylabel("Max Drawdown")
 
             plt.tight_layout()
-            plt.savefig(f"outputs/plots/rolling_metrics_{period_length}d.png")
+            plt.savefig(PLOTS_DIR / f"rolling_metrics_{period_length}d.png")
             plt.close()
 
         except Exception as e:
