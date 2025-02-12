@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 # Add the src directory to the Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data_loader import IntradayDataLoader
-from src.config import EURONEXT_TICKERS, DATA_PROVIDERS, INTRADAY_SETTINGS
+from src.database.data_loader import IntradayDataLoader
+from src.config.settings import EURONEXT_TICKERS, DATA_PROVIDERS, INTRADAY_SETTINGS
 
 # Configure logging
 logging.basicConfig(

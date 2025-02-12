@@ -1,11 +1,72 @@
-.env
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+logs/
 
+
+# Virtual Environment
 venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Data directories
+data/raw/*
+data/processed/*
+data/cache/*
+data/history/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/cache/.gitkeep
+!data/history/.gitkeep
+
+# Output directories
+outputs/models/*
+outputs/analysis/*
+outputs/backtest/*
+outputs/reports/*
+!outputs/models/.gitkeep
+!outputs/analysis/.gitkeep
+!outputs/backtest/.gitkeep
+!outputs/reports/.gitkeep
 data/
-cache/
-outputs/
 
+# Logs
+logs/*
+!logs/.gitkeep
+
+# Configuration
+.env
+*.ini
+*.conf
+
+# OS
 .DS_Store
-*__pycache__/
-
-training.log
+Thumbs.db

@@ -20,10 +20,10 @@ from src.deep_learning.dl_models import (
     FeatureExtractor,
 )
 from src.reinforcement.rl_models import TradingEnvironment, RLTrader
-from src.data_loader import DataLoader
-from src.eigenportfolio_analyzer import EigenportfolioAnalyzer
-from src.arbitrage_signal_detector import ArbitrageSignalDetector
-from src.config import TICKERS
+from src.database.data_loader import DataLoader
+from src.analysis.eigenportfolio import EigenportfolioAnalyzer
+from src.analysis.arbitrage_detector import ArbitrageSignalDetector
+from src.config.settings import TICKERS
 
 # Configure logging
 logging.basicConfig(

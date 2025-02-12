@@ -18,7 +18,7 @@ from pathlib import Path
 # Add src directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.config import TICKERS, MARKET_HOURS
+from src.config.settings.settings import TICKERS, MARKET_HOURS
 from src import RealTimeStrategy
 
 # Configure logging

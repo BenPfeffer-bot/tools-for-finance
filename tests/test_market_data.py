@@ -33,7 +33,7 @@ def on_tick_data(tick_data: Dict):
 
 def main():
     """Main function to test the market data client."""
-    from src.websocket_client import MarketDataClient
+    from src.market_data.websocket_client import MarketDataClient
 
     client = None
     try:

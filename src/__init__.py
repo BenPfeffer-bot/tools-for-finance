@@ -1,15 +1,16 @@
 """
-Tools for Finance package.
-
-This package provides tools for financial data analysis,
-machine learning model training, and real-time trading.
+Tools for Finance package initialization.
 """
 
-from .websocket_client import MarketDataClient
-from .paper_trading import PaperTradingEngine, Order, OrderType, OrderSide
-from .arbitrage_signal_detector import ArbitrageSignalDetector
-from .ml_model_trainer import MLModelTrainer
-from .realtime_strategy import RealTimeStrategy
+from .market_data.websocket_client import MarketDataClient
+from .market_data.tiingo_client import TiingoForexClient
+from .analysis.eigenportfolio import Eigenportfolio
+from .analysis.arbitrage_detector import ArbitrageDetector
+from .trading.paper_trading import PaperTradingEngine
+from .trading.realtime_strategy import RealTimeStrategy
+from .backtesting.backtester import Backtester, StrategyBacktester
+from .models.ml_model import MLModelTrainer
+from .models.rl_model import RLTrader
 
 __version__ = "0.1.0"
 __author__ = "Ben Pfeffer"

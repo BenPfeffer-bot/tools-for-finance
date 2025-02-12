@@ -12,12 +12,12 @@ from datetime import datetime, timedelta
 from typing import Tuple, Dict
 import logging
 
-from src.data_loader import DataLoader
-from src.eigenportfolio_analyzer import EigenportfolioAnalyzer
-from src.arbitrage_signal_detector import ArbitrageSignalDetector
-from src.ml_model_trainer import MLModelTrainer
-from src.backtester import Backtester
-from src.config import TICKERS
+from src.database.data_loader import DataLoader
+from src.analysis.eigenportfolio import EigenportfolioAnalyzer
+from src.analysis.arbitrage_detector import ArbitrageSignalDetector
+from src.models.ml_model import MLModelTrainer
+from src.backtesting.backtester import Backtester
+from src.config.settings import TICKERS
 
 # Configure logging
 logging.basicConfig(

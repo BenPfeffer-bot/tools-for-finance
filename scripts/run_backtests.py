@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.reinforcement.rl_models import RLTrader, TradingEnvironment
-from src.backtester import StrategyBacktester
+from src.backtesting.backtester import StrategyBacktester
 
 # Configure logging
 logging.basicConfig(

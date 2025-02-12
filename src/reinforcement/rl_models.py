@@ -164,34 +164,47 @@ class TradingEnvironment:
     def _get_state(self) -> np.ndarray:
         """Construct the state representation."""
         try:
-            # Market features (window_size x num_assets)
-            market_data = self.returns.iloc[
+            # Get window of returns data
+            window_data = self.returns.iloc[
                 self.current_step - self.window_size : self.current_step
-            ].values
+            ]
 
-            # Position features
-            position_features = np.array(
+            # Calculate features from window
+            features = []
+
+            # 1. Return features (per asset)
+            returns_mean = window_data.mean()
+            returns_std = window_data.std()
+            returns_skew = window_data.skew()
+            latest_return = window_data.iloc[-1]
+
+            for asset in window_data.columns:
+                features.extend(
+                    [
+                        returns_mean[asset],
+                        returns_std[asset],
+                        returns_skew[asset],
+                        latest_return[asset],
+                    ]
+                )
+
+            # 2. Portfolio features
+            features.extend(
                 [
-                    self.positions,  # Current positions for each asset
-                    np.full_like(
-                        self.positions, self.balance / self.initial_balance
-                    ),  # Normalized balance for each asset
+                    self.balance / self.initial_balance - 1,  # Portfolio return
+                    np.sum(np.abs(self.positions)),  # Total exposure
+                    np.sum(self.positions),  # Net exposure
                 ]
             )
 
-            # Prediction features (single value for current step)
-            prediction_feature = np.array([self.predictions[self.current_step]])
+            # 3. Position features
+            features.extend(self.positions)  # Current positions
 
-            # Combine all features
-            state = np.concatenate(
-                [
-                    market_data.flatten(),  # Flattened market data
-                    position_features.flatten(),  # Flattened position features
-                    prediction_feature.flatten(),  # Current prediction
-                ]
-            )
+            # 4. Prediction features
+            features.append(self.predictions[self.current_step])
 
-            return state
+            return np.array(features)
+
         except Exception as e:
             logger.error(f"Error in _get_state: {str(e)}")
             raise

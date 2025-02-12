@@ -13,10 +13,10 @@ from typing import Dict, List, Optional
 import queue
 from collections import defaultdict
 
-from websocket_client import MarketDataClient
-from paper_trading import PaperTradingEngine, Order, OrderType, OrderSide
-from arbitrage_signal_detector import ArbitrageSignalDetector
-from ml_model_trainer import MLModelTrainer
+from src.market_data.websocket_client import MarketDataClient
+from src.trading.paper_trading import PaperTradingEngine, Order, OrderType, OrderSide
+from src.analysis.arbitrage_detector import ArbitrageSignalDetector
+from src.models.ml_model import MLModelTrainer
 
 logger = logging.getLogger(__name__)
 
