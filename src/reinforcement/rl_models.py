@@ -18,26 +18,80 @@ Transition = namedtuple(
 
 
 class DQNTrader(nn.Module):
-    """Deep Q-Network for trade execution optimization."""
+    """Deep Q-Network for forex trading."""
 
     def __init__(
         self,
         state_dim: int,
         action_dim: int,
-        hidden_dim: int = 128,
+        hidden_dim: int = 256,
     ):
+        """Initialize the DQN network."""
         super().__init__()
 
-        self.network = nn.Sequential(
+        self.state_dim = state_dim
+        self.action_dim = action_dim
+        self.num_pairs = action_dim // 3  # Each pair has 3 possible actions
+
+        # Deeper feature extractor with batch normalization
+        self.feature_extractor = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, action_dim),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.ReLU(),
+        )
+
+        # Dueling DQN architecture
+        self.advantage_stream = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(hidden_dim // 2, hidden_dim // 4),
+                    nn.ReLU(),
+                    nn.Linear(hidden_dim // 4, 3),
+                )
+                for _ in range(self.num_pairs)
+            ]
+        )
+
+        self.value_stream = nn.Sequential(
+            nn.Linear(hidden_dim // 2, hidden_dim // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 4, 1),
         )
 
     def forward(self, state: torch.Tensor) -> torch.Tensor:
-        return self.network(state)
+        """Forward pass through the network."""
+        # Ensure state has correct shape
+        if len(state.shape) == 1:
+            state = state.unsqueeze(0)  # Add batch dimension if missing
+
+        features = self.feature_extractor(state)
+
+        # Compute value
+        value = self.value_stream(features)
+
+        # Compute advantages for each pair
+        advantages = []
+        for i in range(self.num_pairs):
+            pair_advantage = self.advantage_stream[i](features)
+            advantages.append(pair_advantage)
+
+        # Combine advantages
+        advantages = torch.cat(advantages, dim=-1)
+
+        # Combine value and advantages (dueling architecture)
+        q_values = value.unsqueeze(-1) + (
+            advantages - advantages.mean(dim=-1, keepdim=True)
+        )
+
+        return q_values
 
 
 class PPOTrader(nn.Module):
@@ -380,34 +434,98 @@ class RLTrader:
         gamma: float = 0.99,
         device: str = "cuda" if torch.cuda.is_available() else "cpu",
     ):
-        """Initialize RLTrader."""
-        logger.info(
-            f"Initializing RLTrader with state_dim: {state_dim}, action_dim: {action_dim}"
-        )
-        self.env = env
+        """Initialize the RL trader."""
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
         self.gamma = gamma
         self.device = device
 
+        # Number of currency pairs
+        self.num_pairs = action_dim // 3  # Each pair has 3 possible actions
+
         # Initialize networks
-        self.policy_net = DQNTrader(state_dim, action_dim, hidden_dim).to(device)
-        self.target_net = DQNTrader(state_dim, action_dim, hidden_dim).to(device)
+        self.policy_net = DQNTrader(
+            state_dim=state_dim, action_dim=action_dim, hidden_dim=hidden_dim
+        ).to(device)
+
+        self.target_net = DQNTrader(
+            state_dim=state_dim, action_dim=action_dim, hidden_dim=hidden_dim
+        ).to(device)
+
         self.target_net.load_state_dict(self.policy_net.state_dict())
 
+        # Initialize optimizer
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=learning_rate)
-        self.replay_buffer = ReplayBuffer(10000)
+
+        # Initialize replay buffer
+        self.replay_buffer = ReplayBuffer()
+
         logger.info(f"RLTrader initialized successfully on device: {device}")
 
-    def select_action(self, state: np.ndarray, epsilon: float = 0.1) -> int:
-        """Select action using epsilon-greedy policy."""
-        if random.random() > epsilon:
-            with torch.no_grad():
-                state_tensor = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-                q_values = self.policy_net(state_tensor)
-                return q_values.max(1)[1].item()
-        else:
-            return random.randrange(self.action_dim)
+    def select_action(self, state: np.ndarray, epsilon: float = 0.1) -> np.ndarray:
+        """Select action using epsilon-greedy policy with balanced risk management."""
+        try:
+            # Ensure state is in correct format
+            if not isinstance(state, np.ndarray):
+                state = np.array(state)
+            if len(state.shape) == 1:
+                state = state.reshape(1, -1)
+
+            # Convert to tensor
+            state_tensor = torch.FloatTensor(state).to(self.device)
+
+            # Select action
+            if np.random.random() > epsilon:
+                with torch.no_grad():
+                    # Get Q-values
+                    q_values = self.policy_net(state_tensor)
+
+                    # Convert to numpy array
+                    q_values = q_values.cpu().numpy()
+
+                    # Get action for each pair with balanced risk management
+                    actions = []
+                    for i in range(self.num_pairs):
+                        pair_q_values = q_values[0, i * 3 : (i + 1) * 3]
+
+                        # Calculate action probabilities using softmax
+                        exp_q_values = np.exp(pair_q_values - np.max(pair_q_values))
+                        probs = exp_q_values / np.sum(exp_q_values)
+
+                        # More balanced confidence threshold
+                        max_prob = np.max(probs)
+                        if max_prob < 0.35:  # Slightly lower threshold
+                            pair_action = 0  # Hold if not confident
+                        else:
+                            # Check if the difference between best and second best is significant
+                            sorted_probs = np.sort(probs)
+                            if (
+                                sorted_probs[-1] - sorted_probs[-2] < 0.15
+                            ):  # Lower threshold
+                                pair_action = 0  # Hold if decision is not clear
+                            else:
+                                pair_action = np.argmax(pair_q_values)
+
+                        actions.append(pair_action)
+
+                    return np.array(actions)
+            else:
+                # More balanced exploration
+                actions = []
+                for _ in range(self.num_pairs):
+                    if np.random.random() < 0.5:  # 50% chance to hold (was 60%)
+                        actions.append(0)
+                    else:
+                        actions.append(
+                            np.random.randint(1, 3)
+                        )  # 50% chance to buy or sell
+                return np.array(actions)
+
+        except Exception as e:
+            logger.error(f"Error in select_action: {str(e)}")
+            # Return safe default actions (hold)
+            return np.zeros(self.num_pairs, dtype=np.int64)
 
     def train_dqn(self, batch_size: int = 64) -> float:
         """Train DQN using experience replay."""
@@ -427,22 +545,38 @@ class RLTrader:
             next_state_batch = next_states.to(self.device)
             done_batch = dones.to(self.device)
 
-            # Compute current Q values
-            current_q_values = self.policy_net(state_batch).gather(
-                1, action_batch.unsqueeze(1)
-            )
+            # Get current Q values
+            current_q_values = self.policy_net(
+                state_batch
+            )  # [batch_size, num_pairs * 3]
+            current_q_values = current_q_values.view(batch_size, self.num_pairs, 3)
+
+            # Create index tensor for gathering
+            batch_idx = torch.arange(batch_size).unsqueeze(1).to(self.device)
+            pair_idx = torch.arange(self.num_pairs).unsqueeze(0).to(self.device)
+
+            # Gather Q values for taken actions
+            current_q_values = current_q_values[batch_idx, pair_idx, action_batch]
+            current_q_values = current_q_values.mean(dim=1)  # Average across pairs
 
             # Compute next Q values
             with torch.no_grad():
-                next_q_values = self.target_net(next_state_batch).max(1)[0]
+                next_q_values = self.target_net(next_state_batch)
+                next_q_values = next_q_values.view(batch_size, self.num_pairs, 3)
+                next_q_values = next_q_values.max(2)[0].mean(
+                    dim=1
+                )  # Max action value per pair, then average
                 next_q_values[done_batch.bool()] = 0.0
                 expected_q_values = reward_batch + self.gamma * next_q_values
 
             # Compute loss and optimize
-            loss = F.smooth_l1_loss(current_q_values.squeeze(), expected_q_values)
+            loss = F.smooth_l1_loss(current_q_values, expected_q_values)
 
             self.optimizer.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(
+                self.policy_net.parameters(), 1.0
+            )  # Add gradient clipping
             self.optimizer.step()
 
             return loss.item()
@@ -544,3 +678,305 @@ class RLTrader:
             f"Training completed. Average reward over all episodes: {sum(total_rewards) / len(total_rewards):.4f}"
         )
         return total_rewards, episode_steps
+
+
+# class ArbitrageDetector:
+#     def __init__(
+#         self,
+#         returns: pd.DataFrame,
+#         eigenportfolios: np.ndarray,
+#         window: int = 50,
+#         lag: int = 1,
+#         te_threshold: float = 2.0,
+#         vol_threshold: float = 1.5,
+#         min_signal_strength: float = 0.3,
+#     ):
+#         # Add new parameters
+#         self.min_signal_strength = min_signal_strength
+#         self.correlation_threshold = 0.7
+#         self.cointegration_window = 252  # One year of data
+
+#         # Add statistical tests
+#         self.statistical_tests = {
+#             "adf_test": self._perform_adf_test,
+#             "granger_test": self._perform_granger_test,
+#             "johansen_test": self._perform_johansen_test,
+#         }
+
+#     def compute_advanced_features(self, returns: pd.DataFrame) -> pd.DataFrame:
+#         """Enhanced feature computation with statistical arbitrage indicators"""
+#         features = pd.DataFrame(index=returns.index)
+
+#         # Eigenportfolio projections
+#         projected_returns = self._compute_eigenportfolio_projections(returns)
+
+#         # Statistical arbitrage features
+#         pairs_features = self._compute_pairs_features(returns)
+
+#         # Market regime features
+#         regime_features = self._compute_regime_features(returns)
+
+#         # Combine all features
+#         features = pd.concat(
+#             [projected_returns, pairs_features, regime_features], axis=1
+#         )
+#         return features
+
+#     def _compute_eigenportfolio_projections(
+#         self, returns: pd.DataFrame
+#     ) -> pd.DataFrame:
+#         """Compute advanced eigenportfolio projections"""
+#         projections = pd.DataFrame(index=returns.index)
+
+#         # Project returns onto eigenportfolios
+#         for i, eigen_portfolio in enumerate(self.eigenportfolios):
+#             projection = returns.dot(eigen_portfolio)
+
+#             # Add rolling statistics
+#             projections[f"eigen_{i}_return"] = projection
+#             projections[f"eigen_{i}_vol"] = projection.rolling(window=20).std()
+#             projections[f"eigen_{i}_zscore"] = (
+#                 projection - projection.rolling(window=50).mean()
+#             ) / projection.rolling(window=50).std()
+
+#             # Add momentum indicators
+#             projections[f"eigen_{i}_momentum"] = projection.rolling(window=10).mean()
+
+#         return projections
+
+#     def _compute_pairs_features(self, returns: pd.DataFrame) -> pd.DataFrame:
+#         """Compute statistical arbitrage pairs features"""
+#         pairs_features = pd.DataFrame(index=returns.index)
+
+#         # Find cointegrated pairs
+#         cointegrated_pairs = self._find_cointegrated_pairs(returns)
+
+#         for pair in cointegrated_pairs:
+#             spread = self._calculate_pair_spread(returns[pair[0]], returns[pair[1]])
+
+#             # Add spread features
+#             pairs_features[f"spread_{pair[0]}_{pair[1]}"] = spread
+#             pairs_features[f"spread_zscore_{pair[0]}_{pair[1]}"] = (
+#                 spread - spread.rolling(window=50).mean()
+#             ) / spread.rolling(window=50).std()
+
+#             # Add mean reversion strength
+#             pairs_features[f"mean_rev_{pair[0]}_{pair[1]}"] = -spread.rolling(
+#                 window=20
+#             ).autocorr()
+
+#         return pairs_features
+
+#     def _compute_regime_features(self, returns: pd.DataFrame) -> pd.DataFrame:
+#         """Compute market regime features"""
+#         regime_features = pd.DataFrame(index=returns.index)
+
+#         # Volatility regime
+#         vol = returns.rolling(window=20).std()
+#         regime_features["volatility_regime"] = (
+#             vol > vol.rolling(window=60).mean()
+#         ).astype(int)
+
+#         # Correlation regime
+#         corr = returns.rolling(window=60).corr()
+#         regime_features["correlation_regime"] = (
+#             corr.mean() > corr.rolling(window=120).mean()
+#         ).astype(int)
+
+#         # Trend regime
+#         ma_fast = returns.rolling(window=20).mean()
+#         ma_slow = returns.rolling(window=50).mean()
+#         regime_features["trend_regime"] = (ma_fast > ma_slow).astype(int)
+
+#         return regime_features
+
+#     def generate_signals(self) -> pd.DataFrame:
+#         """Generate enhanced trading signals"""
+#         signals = pd.DataFrame(index=self.returns.index)
+
+#         # Compute all features
+#         features = self.compute_advanced_features(self.returns)
+
+#         # Generate signals for each strategy
+#         eigen_signals = self._generate_eigen_signals(features)
+#         pairs_signals = self._generate_pairs_signals(features)
+#         regime_signals = self._generate_regime_signals(features)
+
+#         # Combine signals with regime-based weights
+#         signals["combined_signal"] = (
+#             eigen_signals * regime_signals["eigen_weight"]
+#             + pairs_signals * regime_signals["pairs_weight"]
+#         )
+
+#         # Add confidence scores
+#         signals["signal_confidence"] = self._compute_signal_confidence(features)
+
+#         return signals
+
+#     def _compute_signal_confidence(self, features: pd.DataFrame) -> pd.Series:
+#         """Compute confidence scores for signals"""
+#         confidence = pd.Series(index=features.index)
+
+#         # Feature importance based confidence
+#         feature_importance = self._compute_feature_importance(features)
+#         weighted_features = features.multiply(feature_importance, axis=1)
+
+#         # Signal strength
+#         signal_strength = weighted_features.abs().mean(axis=1)
+
+#         # Regime certainty
+#         regime_certainty = self._compute_regime_certainty(features)
+
+#         # Combine confidence metrics
+#         confidence = signal_strength * 0.6 + regime_certainty * 0.4
+
+#         return confidence.clip(0, 1)
+
+
+# class Eigenportfolio:
+#     def __init__(
+#         self,
+#         returns: pd.DataFrame,
+#         n_components: int = 5,
+#         min_explained_variance: float = 0.95,
+#         regime_detection: bool = True,
+#     ):
+#         self.regime_detection = regime_detection
+#         self.risk_factors = None
+#         self.factor_exposures = None
+
+#     def compute_advanced_eigenportfolios(self) -> Tuple[np.ndarray, pd.DataFrame]:
+#         """Compute enhanced eigenportfolios with risk factor analysis"""
+#         # Standard PCA computation
+#         self.pca.fit(self.returns)
+#         eigenportfolios = self.pca.components_
+
+#         # Compute risk factor exposures
+#         self.risk_factors = self._compute_risk_factors()
+#         self.factor_exposures = self._compute_factor_exposures(eigenportfolios)
+
+#         # Adjust eigenportfolios based on risk factors
+#         adjusted_eigenportfolios = self._adjust_eigenportfolios(
+#             eigenportfolios, self.factor_exposures
+#         )
+
+#         return adjusted_eigenportfolios, self.factor_exposures
+
+#     def _compute_risk_factors(self) -> pd.DataFrame:
+#         """Compute market risk factors"""
+#         risk_factors = pd.DataFrame(index=self.returns.index)
+
+#         # Market factor
+#         risk_factors["market"] = self.returns.mean(axis=1)
+
+#         # Volatility factor
+#         risk_factors["volatility"] = self.returns.std(axis=1)
+
+#         # Size factor (if applicable)
+#         if hasattr(self, "market_caps"):
+#             risk_factors["size"] = self._compute_size_factor()
+
+#         # Momentum factor
+#         risk_factors["momentum"] = self._compute_momentum_factor()
+
+#         return risk_factors
+
+#     def _compute_factor_exposures(self, eigenportfolios: np.ndarray) -> pd.DataFrame:
+#         """Compute risk factor exposures for eigenportfolios"""
+#         exposures = pd.DataFrame(
+#             index=range(len(eigenportfolios)), columns=self.risk_factors.columns
+#         )
+
+#         for i, portfolio in enumerate(eigenportfolios):
+#             portfolio_returns = self.returns.dot(portfolio)
+
+#             # Compute factor betas
+#             for factor in self.risk_factors.columns:
+#                 exposures.loc[i, factor] = self._compute_beta(
+#                     portfolio_returns, self.risk_factors[factor]
+#                 )
+
+#         return exposures
+
+#     def analyze_portfolio_risk(self) -> Dict:
+#         """Analyze portfolio risk characteristics"""
+#         risk_metrics = {}
+
+#         # Compute risk decomposition
+#         risk_decomposition = self._compute_risk_decomposition()
+
+#         # Compute factor contribution
+#         factor_contribution = self._compute_factor_contribution()
+
+#         # Compute diversification ratio
+#         diversification_ratio = self._compute_diversification_ratio()
+
+#         risk_metrics.update(
+#             {
+#                 "risk_decomposition": risk_decomposition,
+#                 "factor_contribution": factor_contribution,
+#                 "diversification_ratio": diversification_ratio,
+#             }
+#         )
+
+#         return risk_metrics
+
+
+# class ArbitragePortfolioStrategy:
+#     """Integrates eigenportfolio and arbitrage detection for trading"""
+
+#     def __init__(
+#         self,
+#         returns: pd.DataFrame,
+#         lookback_window: int = 252,
+#         rebalance_frequency: str = "W",
+#         risk_target: float = 0.15,
+#     ):
+#         self.returns = returns
+#         self.lookback_window = lookback_window
+#         self.rebalance_frequency = rebalance_frequency
+#         self.risk_target = risk_target
+
+#         # Initialize components
+#         self.eigenportfolio = Eigenportfolio(returns)
+#         self.arbitrage_detector = ArbitrageDetector(
+#             returns, self.eigenportfolio.eigenportfolios
+#         )
+
+#     def generate_portfolio_weights(self) -> pd.DataFrame:
+#         """Generate portfolio weights combining both strategies"""
+#         # Compute eigenportfolio weights
+#         eigen_weights = self.eigenportfolio.get_eigenportfolio_weights()
+
+#         # Get arbitrage signals
+#         arb_signals = self.arbitrage_detector.generate_signals()
+
+#         # Combine strategies
+#         combined_weights = self._combine_strategies(eigen_weights, arb_signals)
+
+#         # Apply risk targeting
+#         final_weights = self._apply_risk_targeting(combined_weights)
+
+#         return final_weights
+
+#     def _combine_strategies(
+#         self, eigen_weights: pd.DataFrame, arb_signals: pd.DataFrame
+#     ) -> pd.DataFrame:
+#         """Combine eigenportfolio and arbitrage signals"""
+#         # Compute strategy allocations based on regime
+#         regime_weights = self._compute_regime_weights()
+
+#         # Combine weights
+#         combined = (
+#             eigen_weights * regime_weights["eigen"]
+#             + arb_signals * regime_weights["arbitrage"]
+#         )
+
+#         return combined
+
+#     def _apply_risk_targeting(self, weights: pd.DataFrame) -> pd.DataFrame:
+#         """Apply risk targeting to portfolio weights"""
+#         portfolio_vol = self._estimate_portfolio_volatility(weights)
+#         scaling_factor = self.risk_target / portfolio_vol
+
+#         return weights * scaling_factor

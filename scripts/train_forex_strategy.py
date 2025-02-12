@@ -17,7 +17,7 @@ from typing import Dict, List, Tuple
 # Add project root to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.data.forex_data_loader import ForexDataLoader
+from src.database.forex_data_loader import ForexDataLoader
 from src.reinforcement.forex_trading_env import ForexTradingEnvironment
 from src.reinforcement.rl_models import RLTrader
 from src.deep_learning.dl_models import LSTMArbitrageDetector
@@ -88,13 +88,41 @@ class ForexStrategyTrainer:
         # Fetch historical data
         data = self.data_loader.fetch_historical_data(start_date, end_date)
 
-        # Calculate features
-        features = self.data_loader.prepare_features(data)
+        # Prepare features for each pair
+        pair_features = {}
+        for pair in self.pairs:
+            pair_data = data[data["pair"] == pair.upper()]
+            if pair_data.empty:
+                logger.warning(f"No data found for {pair}")
+                continue
+
+            # Calculate features for this pair
+            features = self.data_loader.prepare_features(pair_data)
+
+            # Rename columns to include pair name
+            features = features.add_prefix(f"{pair.lower()}_")
+            pair_features[pair] = features
+
+        # Combine features from all pairs
+        if not pair_features:
+            raise ValueError("No valid data for any pairs")
+
+        # Align all features on the same timestamp index
+        combined_features = pd.concat(pair_features.values(), axis=1)
+
+        # Drop rows with missing data
+        combined_features = combined_features.dropna()
+
+        if combined_features.empty:
+            raise ValueError("No overlapping data found between pairs")
+
+        logger.info(f"Combined features shape: {combined_features.shape}")
+        logger.info(f"Available columns: {combined_features.columns.tolist()}")
 
         # Split into training and validation
-        split_idx = int(len(features) * (1 - self.validation_split))
-        train_data = features.iloc[:split_idx]
-        val_data = features.iloc[split_idx:]
+        split_idx = int(len(combined_features) * (1 - self.validation_split))
+        train_data = combined_features.iloc[:split_idx]
+        val_data = combined_features.iloc[split_idx:]
 
         logger.info(
             f"Prepared data: {len(train_data)} training samples, {len(val_data)} validation samples"

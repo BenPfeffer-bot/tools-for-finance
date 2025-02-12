@@ -1,12 +1,23 @@
-# transfer_entropy.py
+"""
+Transfer entropy calculator for detecting information flow between time series.
+
+This module provides utilities for computing transfer entropy and detecting
+causality shifts between financial time series.
+"""
+
 import numpy as np
 import pandas as pd
 from scipy.stats import entropy
 from typing import Tuple, Optional
 from sklearn.neighbors import KernelDensity
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class TransferEntropyCalculator:
+    """Computes transfer entropy between time series."""
+
     def __init__(self, bins: int = 10, kde_bandwidth: float = 0.1):
         """
         Initialize TransferEntropyCalculator.
@@ -150,3 +161,67 @@ class TransferEntropyCalculator:
 
         shift_detected = abs(latest_zscore) > threshold
         return shift_detected, latest_zscore
+
+    def _compute_te(self, x: np.ndarray, y: np.ndarray, lag: int = 1) -> float:
+        """
+        Compute transfer entropy from x to y.
+
+        Args:
+            x: Source time series
+            y: Target time series
+            lag: Time lag
+
+        Returns:
+            Transfer entropy value
+        """
+        # Discretize the data
+        x_disc = self._discretize(x)
+        y_disc = self._discretize(y)
+
+        # Create lagged versions
+        x_past = x_disc[:-lag]
+        y_past = y_disc[:-lag]
+        y_future = y_disc[lag:]
+
+        # Compute joint and marginal probabilities
+        p_joint = self._joint_probability(x_past, y_past, y_future)
+        p_cond_y = self._joint_probability(y_past, y_future)
+        p_joint_y = self._joint_probability(x_past, y_past)
+        p_y_past = np.histogram(y_past, bins=self.bins, density=True)[0]
+
+        # Compute transfer entropy
+        te = 0.0
+        for i in range(len(p_joint)):
+            if p_joint[i] > 0 and p_cond_y[i] > 0:
+                te += p_joint[i] * np.log2(p_joint[i] / (p_joint_y[i] * p_cond_y[i]))
+
+        return max(0.0, te)  # Transfer entropy should be non-negative
+
+    def _discretize(self, x: np.ndarray) -> np.ndarray:
+        """
+        Discretize continuous data into bins.
+
+        Args:
+            x: Continuous time series
+
+        Returns:
+            Discretized time series
+        """
+        return np.digitize(x, np.linspace(min(x), max(x), self.bins))
+
+    def _joint_probability(self, *args) -> np.ndarray:
+        """
+        Compute joint probability distribution.
+
+        Args:
+            *args: Arrays to compute joint probability for
+
+        Returns:
+            Joint probability array
+        """
+        # Stack arrays and compute histogram
+        stacked = np.vstack(args)
+        hist, _ = np.histogramdd(stacked.T, bins=self.bins)
+
+        # Normalize to get probability
+        return hist.flatten() / np.sum(hist)

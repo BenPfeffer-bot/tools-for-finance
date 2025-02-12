@@ -15,7 +15,7 @@ from collections import defaultdict
 
 from src.market_data.websocket_client import MarketDataClient
 from src.trading.paper_trading import PaperTradingEngine, Order, OrderType, OrderSide
-from src.analysis.arbitrage_detector import ArbitrageSignalDetector
+from src.analysis.arbitrage_detector import ArbitrageDetector
 from src.models.ml_model import MLModelTrainer
 
 logger = logging.getLogger(__name__)
@@ -108,7 +108,7 @@ class RealTimeStrategy:
                 []
             )  # Initialize with pre-computed eigenportfolios
 
-            self.signal_detector = ArbitrageSignalDetector(
+            self.signal_detector = ArbitrageDetector(
                 returns=returns, eigenportfolios=eigenportfolios
             )
 

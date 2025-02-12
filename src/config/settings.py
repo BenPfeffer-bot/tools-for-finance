@@ -4,6 +4,7 @@ Configuration Module
 This module handles project-wide configuration settings.
 """
 
+import pandas as pd
 from .paths import *
 
 # Market data parameters
@@ -17,6 +18,19 @@ CORRELATION_WINDOW = 50
 MOMENTUM_WINDOWS = [5, 10, 20]
 RSI_WINDOW = 14
 TRANSFER_ENTROPY_WINDOW = 50
+
+# Forex data parameters
+RESAMPLE_INTERVAL = "5min"  # Default resampling interval for forex data
+CACHE_DIR = "data/cache"  # Directory for caching data
+FOREX_PAIRS = [  # Default forex pairs to trade
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "USD/CHF",
+    "AUD/USD",
+    "USD/CAD",
+    "NZD/USD",
+]
 
 # Model parameters
 CV_FOLDS = 5

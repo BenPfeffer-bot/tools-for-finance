@@ -21,8 +21,8 @@ from src.deep_learning.dl_models import (
 )
 from src.reinforcement.rl_models import TradingEnvironment, RLTrader
 from src.database.data_loader import DataLoader
-from src.analysis.eigenportfolio import EigenportfolioAnalyzer
-from src.analysis.arbitrage_detector import ArbitrageSignalDetector
+from src.analysis.eigenportfolio import Eigenportfolio
+from src.analysis.arbitrage_detector import ArbitrageDetector
 from src.config.settings import TICKERS
 
 # Configure logging
@@ -322,12 +322,12 @@ if __name__ == "__main__":
 
         # Compute eigenportfolios
         logger.info("Computing eigenportfolios...")
-        eigen_analyzer = EigenportfolioAnalyzer(returns)
-        eigenportfolios = eigen_analyzer.compute_eigenportfolios(n_components=5)
+        eigen_analyzer = Eigenportfolio(returns)
+        eigenportfolios = eigen_analyzer.compute_eigenportfolios()
 
         # Generate features and labels
         logger.info("Generating features and labels...")
-        signal_detector = ArbitrageSignalDetector(returns, eigenportfolios)
+        signal_detector = ArbitrageDetector(returns, eigenportfolios)
         features, labels = signal_detector.generate_features_and_labels()
         logger.info(f"Features shape: {features.shape}, Labels shape: {labels.shape}")
 

@@ -8,7 +8,7 @@ from scipy import stats
 import xgboost as xgb
 import logging
 from datetime import datetime, timedelta
-from .reinforcement.rl_models import RLTrader, TradingEnvironment
+from src.reinforcement.rl_models import RLTrader, TradingEnvironment
 
 logger = logging.getLogger(__name__)
 

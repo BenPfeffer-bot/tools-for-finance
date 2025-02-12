@@ -12,18 +12,11 @@ from alpha_vantage.timeseries import TimeSeries
 from concurrent.futures import ThreadPoolExecutor
 import time
 
-# sys.path.append("/Users/benpfeffer/Desktop/CODE/tools-for-finance/src/")
+sys.path.append("/Users/benpfeffer/Desktop/CODE/tools-for-finance/src/")
 
-from config import (
-    TICKERS,
-    DB,
-    RAW,
-    PROCESSED,
-    COMPILED,
-    HISTORY,
-    FUNDAMENTAL_DATA_DIR,
-    MARKET_DATA_DIR,
-)
+from src.config.settings import TICKERS
+from src.config.paths import MARKET_DATA_CACHE, PROCESSED_DATA
+
 
 # Configure logging
 logging.basicConfig(
@@ -125,7 +118,7 @@ class IntradayDataLoader:
         tickers: List[str],
         provider: str = "alpha_vantage",
         api_key: Optional[str] = None,
-        data_dir: Union[str, Path] = MARKET_DATA_DIR,
+        data_dir: Union[str, Path] = MARKET_DATA_CACHE,
     ):
         self.tickers = tickers
         self.data_dir = Path(data_dir)
@@ -399,7 +392,7 @@ class DataLoader:
         logger.info(f"Final returns matrix shape: {self.returns_matrix.shape}")
 
         # Save returns matrix to file
-        processed_dir = PROCESSED
+        processed_dir = PROCESSED_DATA
         processed_dir.mkdir(parents=True, exist_ok=True)
         self.returns_matrix.to_csv(processed_dir / "returns.csv")
 
@@ -434,7 +427,7 @@ class MultiDataLoader:
         self,
         tickers: Union[str, List[str]],
         df: Optional[pd.DataFrame] = None,
-        raw_data_dir: Union[str, Path] = MARKET_DATA_DIR,
+        raw_data_dir: Union[str, Path] = MARKET_DATA_CACHE,
     ):
         """
         Initialize the MultiDataLoader instance.
@@ -450,7 +443,7 @@ class MultiDataLoader:
             self.tickers = [ticker.upper() for ticker in tickers]
 
         self.raw_data_dir = Path(raw_data_dir)
-        self.data_dir = MARKET_DATA_DIR
+        self.data_dir = MARKET_DATA_CACHE
         self.df = df
 
         # Create data directory if it doesn't exist

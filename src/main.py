@@ -14,7 +14,7 @@ import logging
 
 from src.database.data_loader import DataLoader
 from src.analysis.eigenportfolio import EigenportfolioAnalyzer
-from src.analysis.arbitrage_detector import ArbitrageSignalDetector
+from src.analysis.arbitrage_detector import ArbitrageDetector
 from src.models.ml_model import MLModelTrainer
 from src.backtesting.backtester import Backtester
 from src.config.settings import TICKERS
@@ -114,7 +114,7 @@ if __name__ == "__main__":
 
         # Detect arbitrage signals
         logger.info("\nDetecting arbitrage signals...")
-        signal_detector = ArbitrageSignalDetector(returns, eigenportfolios)
+        signal_detector = ArbitrageDetector(returns, eigenportfolios)
         features, labels = signal_detector.generate_features_and_labels()
 
         # Train ML model

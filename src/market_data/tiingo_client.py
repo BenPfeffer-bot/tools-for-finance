@@ -9,10 +9,11 @@ import json
 import logging
 import threading
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, List
 from datetime import datetime
 import os
 from dotenv import load_dotenv
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,8 @@ class TiingoForexClient:
         self.ws_thread = None
         self.connected = False
         self.connection_event = threading.Event()
+        self.base_url = "https://api.tiingo.com/tiingo/fx"
+        self.last_prices = {}
 
     def _on_message(self, ws, message):
         """Handle incoming WebSocket messages."""
@@ -187,3 +190,25 @@ class TiingoForexClient:
                 logger.info(f"Unsubscribed from pairs: {pairs_to_remove}")
             except Exception as e:
                 logger.error(f"Error unsubscribing from pairs: {str(e)}")
+
+    def get_latest_prices(self) -> Dict[str, float]:
+        """Get latest prices for all pairs."""
+        try:
+            prices = {}
+            headers = {"Authorization": f"Token {self.api_key}"}
+
+            for pair in self.pairs:
+                url = f"{self.base_url}/{pair}/prices"
+                params = {"resampleFreq": "1min", "limit": 1}
+
+                response = requests.get(url, headers=headers, params=params)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data:
+                        prices[pair] = data[0].get("mid", 0.0)
+
+            return prices
+
+        except Exception as e:
+            logger.error(f"Error getting latest prices: {str(e)}")
+            return {}

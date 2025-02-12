@@ -21,12 +21,18 @@ import queue
 import yfinance as yf
 import time
 
-from websocket_client import MarketDataClient
-from paper_trading import PaperTradingEngine, Order, OrderType, OrderSide
-from arbitrage_signal_detector import ArbitrageSignalDetector
-from ml_model_trainer import MLModelTrainer
-from reinforcement.rl_models import RLTrader, TradingEnvironment
-from config import EURONEXT_TICKERS
+# Add project root to path
+project_root = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+sys.path.append(project_root)
+
+from src.market_data.websocket_client import MarketDataClient
+from src.trading.paper_trading import PaperTradingEngine, Order, OrderType, OrderSide
+from src.analysis.arbitrage_detector import ArbitrageDetector
+from src.models.ml_model import MLModelTrainer
+from src.models.rl_model import RLTrader, TradingEnvironment
+from src.config.settings import TICKERS
 
 # Configure logging
 logging.basicConfig(
@@ -118,7 +124,7 @@ class PaperTradingSimulation:
             historical_data = self._load_historical_data()
 
             # Initialize signal detector
-            self.signal_detector = ArbitrageSignalDetector(
+            self.signal_detector = ArbitrageDetector(
                 returns=historical_data,
                 eigenportfolios=np.array([]),  # Will be computed from data
             )
@@ -746,13 +752,12 @@ def main():
     """Main function to run paper trading simulation."""
     try:
         # Initialize simulation with all tickers
-        logger.info(f"Starting simulation with {len(EURONEXT_TICKERS)} tickers")
+        logger.info(f"Starting simulation with {len(TICKERS)} tickers")
 
         # Create batches of tickers to avoid overwhelming the data feed
         batch_size = 10
         ticker_batches = [
-            EURONEXT_TICKERS[i : i + batch_size]
-            for i in range(0, len(EURONEXT_TICKERS), batch_size)
+            TICKERS[i : i + batch_size] for i in range(0, len(TICKERS), batch_size)
         ]
 
         simulations = []

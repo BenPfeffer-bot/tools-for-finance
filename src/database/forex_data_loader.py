@@ -20,7 +20,7 @@ import json
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.market_data.tiingo_client import TiingoForexClient
-from src.config.settingss.trading_config import *
+from src.config.settings import *
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,11 @@ class ForexDataLoader:
                             spread = pair_data["close"] * 0.0001  # 1 pip spread
                             pair_data["bid"] = pair_data["close"] - spread / 2
                             pair_data["ask"] = pair_data["close"] + spread / 2
+                            pair_data["mid"] = (pair_data["bid"] + pair_data["ask"]) / 2
+                            pair_data["spread"] = pair_data["ask"] - pair_data["bid"]
+                            pair_data["spread_pct"] = (
+                                pair_data["spread"] / pair_data["mid"]
+                            )
 
                             # Add volume if missing
                             if "volume" not in pair_data.columns:
@@ -199,57 +204,73 @@ class ForexDataLoader:
                                     1000000, 10000000, size=len(pair_data)
                                 )
 
-                            pair_data["bid_size"] = pair_data["volume"] // 2
-                            pair_data["ask_size"] = pair_data["volume"] // 2
-                        else:
-                            # Rename columns if they exist in original format
-                            column_mapping = {
-                                "bidPrice": "bid",
-                                "askPrice": "ask",
-                                "bidSize": "bid_size",
-                                "askSize": "ask_size",
-                                "date": "timestamp",
-                            }
-                            pair_data.rename(columns=column_mapping, inplace=True)
-
-                            # Add volume if missing
-                            if "volume" not in pair_data.columns:
-                                pair_data["volume"] = (
-                                    (pair_data["bid_size"] + pair_data["ask_size"])
-                                    if "bid_size" in pair_data.columns
-                                    else np.random.randint(
-                                        1000000, 10000000, size=len(pair_data)
-                                    )
+                            # Add bid/ask sizes if missing
+                            if "bid_size" not in pair_data.columns:
+                                pair_data["bid_size"] = np.random.randint(
+                                    100000, 1000000, size=len(pair_data)
                                 )
+                            if "ask_size" not in pair_data.columns:
+                                pair_data["ask_size"] = np.random.randint(
+                                    100000, 1000000, size=len(pair_data)
+                                )
+
+                    # Add pair identifier and ensure uppercase
+                    pair_data["pair"] = pair.upper()
+                    pair_data["ticker"] = pair.upper()
 
                     # Ensure timestamp column exists
                     if "date" in pair_data.columns:
                         pair_data.rename(columns={"date": "timestamp"}, inplace=True)
 
-                    # Calculate mid price and other fields
-                    pair_data["mid"] = (pair_data["bid"] + pair_data["ask"]) / 2
-                    pair_data["spread"] = pair_data["ask"] - pair_data["bid"]
-                    pair_data["spread_pct"] = pair_data["spread"] / pair_data["mid"]
-                    pair_data["pair"] = pair
-
                     # Cache the data
-                    if use_cache:
-                        pair_data.to_parquet(cache_file)
-                        logger.info(f"Cached data for {pair}")
+                    os.makedirs(self.cache_dir, exist_ok=True)
+                    pair_data.to_parquet(cache_file)
+                    logger.info(f"Cached data for {pair}")
                 else:
                     logger.error(f"Error fetching data for {pair}: {response.text}")
                     continue
 
             all_data.append(pair_data)
 
+        # Combine all data
         if not all_data:
             logger.warning("No data collected for any pair")
             return pd.DataFrame()
 
-        # Combine all data
-        combined_data = pd.concat(all_data, ignore_index=True)
-        combined_data["timestamp"] = pd.to_datetime(combined_data["timestamp"])
-        combined_data.set_index("timestamp", inplace=True)
+        # Process each pair's data
+        processed_data = {}
+        for i, pair_data in enumerate(all_data):
+            pair = self.pairs[i].upper()
+
+            # Ensure timestamp column exists
+            if "date" in pair_data.columns:
+                pair_data.rename(columns={"date": "timestamp"}, inplace=True)
+
+            # Set timestamp as index
+            pair_data["timestamp"] = pd.to_datetime(pair_data["timestamp"])
+            pair_data.set_index("timestamp", inplace=True)
+
+            # Add pair identifier
+            pair_data["pair"] = pair
+
+            processed_data[pair] = pair_data
+
+        # Find common timestamps
+        common_index = None
+        for pair_data in processed_data.values():
+            if common_index is None:
+                common_index = pair_data.index
+            else:
+                common_index = common_index.intersection(pair_data.index)
+
+        # Align all data on common timestamps
+        aligned_data = []
+        for pair, pair_data in processed_data.items():
+            aligned_pair_data = pair_data.loc[common_index]
+            aligned_data.append(aligned_pair_data)
+
+        # Combine all aligned data
+        combined_data = pd.concat(aligned_data)
 
         # Ensure all required columns exist
         required_columns = [
@@ -261,7 +282,9 @@ class ForexDataLoader:
             "volume",
             "spread",
             "spread_pct",
+            "pair",
         ]
+
         for col in required_columns:
             if col not in combined_data.columns:
                 logger.warning(f"Column {col} missing from data, adding default values")
@@ -276,7 +299,6 @@ class ForexDataLoader:
         logger.info(f"Final columns: {combined_data.columns.tolist()}")
         logger.debug(f"Sample of final data:\n{combined_data.head()}")
 
-        self.historical_data = combined_data
         return combined_data
 
     def get_realtime_data(self, pair: str) -> pd.DataFrame:
@@ -319,44 +341,75 @@ class ForexDataLoader:
         """
         features = pd.DataFrame(index=data.index)
 
-        # Ensure required columns exist
-        required_columns = ["bid", "ask", "mid", "bid_size", "ask_size"]
-        missing_columns = [col for col in required_columns if col not in data.columns]
-        if missing_columns:
-            logger.error(f"Missing required columns: {missing_columns}")
-            logger.info(f"Available columns: {data.columns.tolist()}")
-            raise ValueError(f"Missing required columns: {missing_columns}")
+        # Copy required columns directly
+        required_columns = ["bid", "ask", "mid", "volume", "pair"]
+        for col in required_columns:
+            if col in data.columns:
+                features[col] = data[col]
+            else:
+                logger.warning(f"Missing required column: {col}")
+                # Calculate if possible
+                if col == "mid" and "bid" in data.columns and "ask" in data.columns:
+                    features["mid"] = (data["bid"] + data["ask"]) / 2
+                elif col == "volume" and "volume" not in data.columns:
+                    features["volume"] = np.random.randint(
+                        1000000, 10000000, size=len(data)
+                    )
+                elif col == "pair" and "ticker" in data.columns:
+                    features["pair"] = data["ticker"].str.upper()
 
         # Calculate returns
-        features["returns"] = data["mid"].pct_change()
+        if "mid" in features.columns:
+            features["returns"] = features["mid"].pct_change()
+        elif "close" in data.columns:
+            features["returns"] = data["close"].pct_change()
 
         # Add technical indicators
-        for window in window_sizes:
-            # Moving averages
-            features[f"ma_{window}"] = data["mid"].rolling(window=window).mean()
+        price_col = "mid" if "mid" in features.columns else "close"
+        if price_col in data.columns:
+            for window in window_sizes:
+                # Moving averages
+                features[f"ma_{window}"] = data[price_col].rolling(window=window).mean()
 
-            # Volatility
-            features[f"volatility_{window}"] = data["mid"].rolling(window=window).std()
+                # Volatility
+                features[f"volatility_{window}"] = (
+                    data[price_col].rolling(window=window).std()
+                )
 
-            # RSI
-            delta = data["mid"].diff()
-            gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-            loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-            rs = gain / loss
-            features[f"rsi_{window}"] = 100 - (100 / (1 + rs))
+                # RSI
+                delta = data[price_col].diff()
+                gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
+                rs = gain / loss
+                features[f"rsi_{window}"] = 100 - (100 / (1 + rs))
 
         # Bid-Ask spread
-        features["spread"] = data["ask"] - data["bid"]
-        features["spread_pct"] = features["spread"] / data["mid"]
+        if "bid" in features.columns and "ask" in features.columns:
+            features["spread"] = features["ask"] - features["bid"]
+            if "mid" in features.columns:
+                features["spread_pct"] = features["spread"] / features["mid"]
 
         # Volume indicators
-        features["bid_size"] = data["bid_size"]
-        features["ask_size"] = data["ask_size"]
-        features["size_imbalance"] = (data["bid_size"] - data["ask_size"]) / (
-            data["bid_size"] + data["ask_size"]
-        )
+        if "bid_size" in data.columns and "ask_size" in data.columns:
+            features["bid_size"] = data["bid_size"]
+            features["ask_size"] = data["ask_size"]
+            features["size_imbalance"] = (data["bid_size"] - data["ask_size"]) / (
+                data["bid_size"] + data["ask_size"]
+            )
 
-        return features.fillna(0)  # Fill NaN values with 0
+        # Fill NaN values with 0 and verify required columns
+        features = features.fillna(0)
+        missing_required = [
+            col for col in required_columns if col not in features.columns
+        ]
+        if missing_required:
+            logger.error(
+                f"Still missing required columns after preparation: {missing_required}"
+            )
+            logger.info(f"Available columns: {features.columns.tolist()}")
+            raise ValueError(f"Missing required columns: {missing_required}")
+
+        return features
 
     def get_latest_prices(self) -> Dict[str, float]:
         """Get latest prices for all pairs."""

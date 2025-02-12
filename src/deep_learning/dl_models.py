@@ -18,7 +18,7 @@ class LSTMArbitrageDetector(nn.Module):
         hidden_dim: int = 64,
         num_layers: int = 2,
         dropout: float = 0.2,
-        device: str = "cuda" if torch.cuda.is_available() else "cpu",
+        device: str = "gpu" if torch.cuda.is_available() else "cpu",
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
