@@ -1,21 +1,21 @@
 {
     "performance_metrics": {
-        "total_return": 0.03703830028728139,
-        "annual_return": 0.03376383702547159,
-        "annual_volatility": 0.034297588186316154,
-        "sharpe_ratio": 0.984437647395349,
-        "max_drawdown": -0.018867947146630426
+        "total_return": 0.05243809704836866,
+        "annual_return": 0.047771123013923056,
+        "annual_volatility": 0.037949636274765865,
+        "sharpe_ratio": 1.2588031850436434,
+        "max_drawdown": -0.019393982746778504
     },
     "position_metrics": {
-        "avg_gross_exposure": 0.10507246376811594,
-        "avg_net_exposure": 0.10507246376811594,
-        "max_position_size": 0.054603570892288796,
-        "avg_position_count": 4.728260869565218
+        "avg_gross_exposure": 0.14130434782608695,
+        "avg_net_exposure": 0.14130434782608695,
+        "max_position_size": 0.053773539996841924,
+        "avg_position_count": 6.5
     },
     "signal_metrics": {
-        "signal_mean": 0.33163448373768817,
-        "signal_std": 0.21156061374442717,
-        "signal_skew": 0.837296136249494,
-        "signal_kurtosis": 0.10019229982383271
+        "signal_mean": 0.3263590781644981,
+        "signal_std": 0.22617931609193637,
+        "signal_skew": 0.6006740006297165,
+        "signal_kurtosis": -0.7543852399329998
     }
 }

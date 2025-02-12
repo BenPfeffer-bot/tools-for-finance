@@ -3,7 +3,13 @@ import numpy as np
 import pandas as pd
 import sys, os
 import xgboost as xgb
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_validate
+from sklearn.model_selection import (
+    train_test_split,
+    StratifiedKFold,
+    cross_validate,
+    GridSearchCV,
+    RandomizedSearchCV,
+)
 from sklearn.metrics import (
     accuracy_score,
     precision_score,
@@ -285,92 +291,137 @@ class MLModelTrainer:
             logger.error(f"Error in feature selection: {str(e)}")
             raise
 
-    def train_model(self, features: pd.DataFrame, labels: pd.Series) -> xgb.Booster:
+    def train_model(
+        self, X: np.ndarray, y: np.ndarray
+    ) -> Tuple[xgb.XGBClassifier, Dict]:
         """
-        Train the XGBoost model on the provided features and labels.
+        Train XGBoost model with optimized hyperparameter tuning.
 
         Args:
-            features: DataFrame of input features
-            labels: Series of binary labels
+            X: Feature matrix
+            y: Target labels
 
         Returns:
-            Trained XGBoost classifier
+            tuple: (trained model, performance metrics)
         """
-        try:
-            # Perform feature selection
-            selected_features = self.select_features(features, labels)
-            logger.info(f"Training with {selected_features.shape[1]} selected features")
+        # Scale features
+        X_scaled = self.scaler.fit_transform(X)
 
-            # Store selected feature names
-            self.selected_feature_names = selected_features.columns.tolist()
+        # Split data
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_scaled, y, test_size=0.2, random_state=42, stratify=y
+        )
 
-            # Split data into training and validation sets
-            X_train, X_val, y_train, y_val = train_test_split(
-                selected_features,
-                labels,
-                test_size=0.2,
-                random_state=42,
-                stratify=labels,
-            )
+        # Define focused hyperparameter search space
+        param_grid = {
+            "max_depth": [4, 5, 6],
+            "learning_rate": [0.01, 0.05],
+            "n_estimators": [200, 300],
+            "min_child_weight": [3, 5],
+            "gamma": [0.1, 0.2],
+            "subsample": [0.8, 0.9],
+            "colsample_bytree": [0.8, 0.9],
+            "reg_alpha": [0.1, 0.5],
+            "reg_lambda": [0.1, 1.0],
+        }
 
-            # Calculate class weights
-            neg_weight = 1.0
-            pos_weight = (len(y_train) - y_train.sum()) / y_train.sum()
+        # Initialize base model with tree method for faster training
+        base_model = xgb.XGBClassifier(
+            objective="binary:logistic",
+            eval_metric=["auc", "logloss"],
+            use_label_encoder=False,
+            tree_method="hist",
+            random_state=42,
+        )
 
-            # Create DMatrix objects for XGBoost with sample weights
-            dtrain = xgb.DMatrix(
-                X_train, label=y_train, feature_names=self.selected_feature_names
-            )
-            dval = xgb.DMatrix(
-                X_val, label=y_val, feature_names=self.selected_feature_names
-            )
+        # Perform randomized search with cross-validation
+        search = RandomizedSearchCV(
+            estimator=base_model,
+            param_distributions=param_grid,
+            n_iter=10,
+            cv=5,
+            scoring="roc_auc",
+            n_jobs=-1,
+            verbose=1,
+            random_state=42,
+        )
 
-            # Set up parameters
-            params = {
-                "objective": "binary:logistic",
-                "eval_metric": ["auc", "error", "logloss"],
-                "max_depth": self.max_depth,
-                "learning_rate": self.learning_rate,
-                "subsample": 0.7,
-                "colsample_bytree": 0.7,
-                "min_child_weight": 5,
-                "gamma": 0.2,
-                "scale_pos_weight": pos_weight,
-                "max_delta_step": 2,
-                "tree_method": "hist",
-                "grow_policy": "lossguide",
-                "max_leaves": 32,
-                "reg_alpha": 0.1,
-                "reg_lambda": 1.0,
-            }
+        # Create eval set for early stopping
+        eval_set = [(X_val, y_val)]
 
-            # Initialize evaluation results dictionary
-            evals_result = {}
+        # Fit search with early stopping
+        search.fit(
+            X_train, y_train, eval_set=eval_set, early_stopping_rounds=20, verbose=False
+        )
 
-            # Train model with early stopping
-            self.model = xgb.train(
-                params,
-                dtrain,
-                num_boost_round=2000,
-                evals=[(dtrain, "train"), (dval, "val")],
-                early_stopping_rounds=100,
-                verbose_eval=False,
-                evals_result=evals_result,
-            )
+        # Get best model
+        best_model = search.best_estimator_
 
-            # Store evaluation results and feature names
-            self.eval_results = evals_result
-            self.model.feature_names = self.selected_feature_names
+        # Get feature importance
+        importance = best_model.feature_importances_
+        sorted_idx = np.argsort(importance)[::-1]
 
-            # Log training results
-            logger.info(f"Best iteration: {self.model.best_iteration}")
-            logger.info(f"Best validation AUC: {self.model.best_score:.4f}")
+        # Log top features
+        logger.info("\nTop 5 features by importance:")
+        for idx in sorted_idx[:5]:
+            logger.info(f"{idx}: {importance[idx]:.4f}")
 
-            return self.model
+        # Evaluate on validation set
+        y_pred_proba = best_model.predict_proba(X_val)[:, 1]
+        val_auc = roc_auc_score(y_val, y_pred_proba)
+        logger.info(f"Validation AUC: {val_auc:.4f}")
 
-        except Exception as e:
-            logger.error(f"Error training model: {str(e)}")
-            raise
+        # Compute additional metrics
+        y_pred = (y_pred_proba > 0.5).astype(int)
+        metrics = {
+            "val_auc": val_auc,
+            "val_precision": precision_score(y_val, y_pred),
+            "val_recall": recall_score(y_val, y_pred),
+            "val_f1": f1_score(y_val, y_pred),
+            "best_params": search.best_params_,
+            "feature_importance": dict(zip(range(X.shape[1]), importance)),
+        }
+
+        logger.info(f"Validation Precision: {metrics['val_precision']:.4f}")
+        logger.info(f"Validation Recall: {metrics['val_recall']:.4f}")
+        logger.info(f"Validation F1: {metrics['val_f1']:.4f}")
+
+        return best_model, metrics
+
+    def train_ensemble(self, X: np.ndarray, y: np.ndarray, n_models: int = 5) -> List:
+        """
+        Train an ensemble of models with different random seeds.
+
+        Args:
+            X: Feature matrix
+            y: Target labels
+            n_models: Number of models in ensemble
+
+        Returns:
+            list: List of trained models
+        """
+        models = []
+        for i in range(n_models):
+            logger.info(f"\nTraining model {i + 1}/{n_models}")
+            model, _ = self.train_model(X, y)
+            models.append(model)
+        return models
+
+    def predict_ensemble(self, models: List, X: np.ndarray) -> np.ndarray:
+        """
+        Generate ensemble predictions by averaging individual model predictions.
+
+        Args:
+            models: List of trained models
+            X: Feature matrix
+
+        Returns:
+            array: Ensemble predictions
+        """
+        predictions = np.zeros((X.shape[0], len(models)))
+        for i, model in enumerate(models):
+            predictions[:, i] = model.predict_proba(X)[:, 1]
+        return predictions.mean(axis=1)
 
     def cross_validate(
         self, features: pd.DataFrame, labels: pd.Series, n_splits: int = 5

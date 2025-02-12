@@ -3,6 +3,7 @@
 venv/
 data/
 cache/
+outputs/
 
 .DS_Store
 *__pycache__/

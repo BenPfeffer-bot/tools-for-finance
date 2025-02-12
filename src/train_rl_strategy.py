@@ -253,69 +253,57 @@ def evaluate_strategy(
     agent: RLTrader,
     window_size: int = 50,
 ) -> Dict[str, float]:
-    """Evaluate the trading strategy and save trading history."""
+    """Evaluate the complete strategy."""
     env = TradingEnvironment(
-        returns=returns, predictions=predictions, window_size=window_size
+        returns=returns,
+        predictions=predictions,
+        window_size=window_size,
     )
+
     state = env.reset()
     done = False
     total_reward = 0
-
-    trading_history = []
+    portfolio_values = [env.balance]
 
     while not done:
         action = agent.select_action(
             state, epsilon=0
         )  # No exploration during evaluation
-        next_state, reward, done, info = env.step(action)
-
-        # Record trading history
-        trading_history.append(
-            {
-                "timestamp": returns.index[env.current_step].strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                ),
-                "action": int(action),
-                "reward": float(reward),
-                "positions": env.positions.tolist(),
-                "returns": float(info["current_return"]),
-                "portfolio_value": float(info["portfolio_value"]),
-                "signals": float(predictions[env.current_step]),
-            }
-        )
-
-        state = next_state
+        state, reward, done, info = env.step(action)
         total_reward += reward
+        portfolio_values.append(info["balance"])
 
     # Calculate metrics
-    portfolio_values = np.array([h["portfolio_value"] for h in trading_history])
-    returns_series = np.diff(portfolio_values) / portfolio_values[:-1]
+    portfolio_values = np.array(portfolio_values)
+    returns = np.diff(portfolio_values) / portfolio_values[:-1]
 
-    annual_factor = 252  # Number of trading days in a year
     metrics = {
-        "total_return": (portfolio_values[-1] / portfolio_values[0] - 1) * 100,
-        "annual_return": (
-            (portfolio_values[-1] / portfolio_values[0])
-            ** (annual_factor / len(returns_series))
-            - 1
+        "total_return": (portfolio_values[-1] / portfolio_values[0] - 1),
+        "annual_return": (portfolio_values[-1] / portfolio_values[0])
+        ** (252 / len(returns))
+        - 1,
+        "annual_volatility": np.std(returns) * np.sqrt(252),
+        "sharpe_ratio": np.mean(returns) / np.std(returns) * np.sqrt(252),
+        "max_drawdown": np.min(
+            portfolio_values / np.maximum.accumulate(portfolio_values)
         )
-        * 100,
-        "annual_volatility": np.std(returns_series) * np.sqrt(annual_factor) * 100,
-        "sharpe_ratio": (np.mean(returns_series) / np.std(returns_series))
-        * np.sqrt(annual_factor)
-        * 100,
-        "max_drawdown": (
-            (portfolio_values - np.maximum.accumulate(portfolio_values))
-            / np.maximum.accumulate(portfolio_values)
-        ).min()
-        * 100,
-        "total_reward": total_reward * 100,
+        - 1,
+        "total_reward": total_reward,
     }
 
-    # Save trading history
-    os.makedirs("outputs", exist_ok=True)
-    with open("outputs/trading_history.json", "w") as f:
-        json.dump(trading_history, f)
+    # Plot portfolio value
+    plt.figure(figsize=(10, 6))
+    plt.plot(portfolio_values)
+    plt.title("Portfolio Value")
+    plt.xlabel("Step")
+    plt.ylabel("Value")
+    plt.grid(True)
+    plt.savefig("outputs/plots/portfolio_value.png")
+    plt.close()
+
+    # Save metrics
+    with open("outputs/reports/strategy_metrics.json", "w") as f:
+        json.dump(metrics, f, indent=4)
 
     return metrics
 
